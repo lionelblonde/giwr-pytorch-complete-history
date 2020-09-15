@@ -3,7 +3,7 @@ import argparse
 from helpers.misc_util import boolean_flag
 
 
-def argparser(description="DDPG Experiment"):
+def argparser(description="Offline RL Experiment"):
     """Create an argparse.ArgumentParser"""
     parser = argparse.ArgumentParser(description=description,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -12,14 +12,14 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--wandb_project', help='wandb project name', default='DEFAULT')
     parser.add_argument('--env_id', help='environment identifier', default=None)
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--expert_path', help='demos location', type=str, default=None)
 
     # Generic
     parser.add_argument('--uuid', type=str, default=None)
     boolean_flag(parser, 'cuda', default=False)
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
-    parser.add_argument('--task', type=str, choices=['train', 'eval'], default=None)
+    parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)
+    parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq', 'bear'], default=None)
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
@@ -80,11 +80,27 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--c51_vmax', type=float, default=100.)
     parser.add_argument('--num_tau', type=int, default=200)
 
-    # Evaluation
+    # Evaluation and buffer generation
     parser.add_argument('--model_path', type=str, default=None)
     parser.add_argument('--num_trajs', help='number of trajectories to evaluate',
                         type=int, default=10)
     parser.add_argument('--iter_num', help='iteration to evaluate the model at',
-                        type=int, default=None)
+                        type=str, default=None)  # the number might have a suffix
+    parser.add_argument('--gen_buffer_size', help='generated buffer size',
+                        type=int, default=int(1e6))
+
+    # Offline RL
+    boolean_flag(parser, 'offline', default=False)
+    boolean_flag(parser, 'use_expert_demos', default=False)
+    parser.add_argument('--sub_rate', help='sub-sampling rate', type=int, default=20)
+    parser.add_argument('--expert_path', help='demos location', type=str, default=None)
+    parser.add_argument('--dataset_path', type=str, default=None)
+
+    # SAC, BCQ, BEAR
+    boolean_flag(parser, 'use_adaptive_alpha', default=True)
+    parser.add_argument('--alpha_lr', type=float, default=1e-4)
+    boolean_flag(parser, 'stochastic', default=False)
+    parser.add_argument('--init_temperature', type=float, default=0.1)
+    parser.add_argument('--crit_targ_update_freq', type=int, default=2)
 
     return parser

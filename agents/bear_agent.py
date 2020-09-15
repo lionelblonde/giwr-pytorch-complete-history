@@ -10,10 +10,10 @@ from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import ActorPhi, ActorVAE, Critic
+from agents.nets import TanhGaussActor, ActorVAE, Critic
 
 
-class BCQAgent(object):
+class BEARAgent(object):
 
     def __init__(self, env, device, hps, to_load_in_memory):
         self.env = env
@@ -42,9 +42,9 @@ class BCQAgent(object):
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
         # Create online and target nets, and initilize the target nets
-        self.actr = ActorPhi(self.env, self.hps).to(self.device)
+        self.actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = ActorPhi(self.env, self.hps).to(self.device)
+        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
         self.crit = Critic(self.env, self.hps).to(self.device)
         sync_with_root(self.crit)
@@ -61,6 +61,16 @@ class BCQAgent(object):
         # Create VAE actor, "batch-constrained" by construction
         self.vae = ActorVAE(self.env, self.hps).to(self.device)
         sync_with_root(self.vae)
+
+        # self.hps.use_adaptive_alpha = True  # original hp in BEAR codebase
+        self.hps.use_adaptive_alpha = False  # better hp according to BRAC
+        # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
+        if self.hps.use_adaptive_alpha:
+            # Create learnable Lagrangian multiplier
+            self.w = torch.tensor(1.).to(self.device)
+            self.w.requires_grad = True
+        else:
+            self.w = 30.  # hp from BRAC's hp search
 
         # Set up replay buffer
         shapes = {
@@ -87,7 +97,10 @@ class BCQAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=1.0e-3)
+        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=3.0e-4)
+
+        if self.hps.use_adaptive_alpha:
+            self.w_opt = torch.optim.Adam([self.w], lr=1.0e-3)
 
         # Set up the learning rate schedule
         def _lr(t):  # flake8: using a def instead of a lambda
@@ -170,8 +183,8 @@ class BCQAgent(object):
             self.twin.rms_obs.update(_state)
             self.targ_twin.rms_obs.update(_state)
 
-    def patcher(self):
-        raise NotImplementedError  # TODO
+    # def patcher(self):
+    #     raise NotImplementedError  # XXX no need
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -185,13 +198,13 @@ class BCQAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                # _patcher,  # TODO
+                # _patcher,  # XXX no need
                 None,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                # _patcher,  # TODO
+                # _patcher,  # XXX no need
                 None,
             )
         return batch
@@ -202,14 +215,9 @@ class BCQAgent(object):
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
         """
         # Create tensor from the state (`require_grad=False` by default)
-        ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
-        ac_from_vae = self.vae.decode(ob)
+        ob = torch.Tensor(ob[None]).to(self.device)
         # Predict the action
-        ac = self.actr.act(ob, ac_from_vae)
-        # Among the 100 values, take the one with the highest Q value (or Z value)
-        q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
-        index = q_value.argmax(0)
-        ac = ac[index]
+        ac = float(self.max_ac) * self.actr.sample(ob)
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action
@@ -255,8 +263,7 @@ class BCQAgent(object):
 
         # Compute target QZ estimate
         next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
-        next_action_from_vae = self.vae.decode(next_state)
-        next_action = self.targ_actr.act(next_state, next_action_from_vae)
+        next_action = float(self.max_ac) * self.targ_actr.sample(next_state)
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
@@ -325,17 +332,71 @@ class BCQAgent(object):
             self.twin_opt.step()
 
         # Actor loss
-        action_from_vae = self.vae.decode(state)
-        _actr_loss = -self.crit.QZ(state, self.actr.act(state, action_from_vae))
-        actr_loss = _actr_loss.mean()
+        expansion = 4  # original hp in BEAR codebase
+        squashed_action_from_vae, action_from_vae = self.vae.decodex(state, expansion=expansion)
+        expanded_state = state.unsqueeze(1).repeat(1, expansion, 1).view(-1, state.shape[1])
+        squashed_action_from_actor, action_from_actor = self.actr.act(expanded_state)
+        new_shape = [action.shape[0], expansion, action.shape[1]]
+        squashed_action_from_actor = squashed_action_from_actor.view(*new_shape)
+        action_from_actor = action_from_actor.view(*new_shape)
+
+        squashed_action_loss = F.mse_loss(
+            squashed_action_from_vae,
+            squashed_action_from_actor,
+            reduction='none',
+        ).sum(-1)
+        action_loss = F.mse_loss(
+            action_from_vae,
+            action_from_actor,
+            reduction='none',
+        ).sum(-1)
+
+        # BEAR makes the actor maximize the value of the critic that has the minimal value
+        # independently for each batch dimension (some update the first, some the second).
+        _action = float(self.max_ac) * squashed_action_from_actor
+        collapsed_action = _action[:, 0, :]  # along the first mmd-expanded dimension
+        assert collapsed_action.shape == action.shape
+        neg_actr_loss_1 = self.crit.QZ(state, collapsed_action)
+        neg_actr_loss_2 = self.twin.QZ(state, collapsed_action)
+        neg_actr_loss = torch.min(neg_actr_loss_1, neg_actr_loss_2)[:, 0]
+
+        # Deal with the mmd
+        kernel = 'gaussian'  # original hp in BEAR codebase
+        # Define sigma as indicated in the BEAR codebase (HAXX)
+        if 'hopper' in self.hps.env_id or 'halfcheetah' in self.hps.env_id:
+            mmd_sigma = 20.
+        elif 'walker' in self.hps.env_id or 'ant' in self.hps.env_id:
+            mmd_sigma = 50.
+        else:
+            mmd_sigma = 50.
+        inputs = dict(input_a=action_from_vae, input_b=action_from_actor, sigma=mmd_sigma)
+        if kernel == 'laplacian':
+            mmd_loss = self.mmd_loss_laplacian(**inputs)
+        elif kernel == 'gaussian':
+            mmd_loss = self.mmd_loss_gaussian(**inputs)
+        else:
+            raise NotImplementedError("invalid kernel.")
+
+        # Only update the policy after a certian number of iteration
+        alpha = self.w.exp() if self.hps.use_adaptive_alpha else self.w
+        if iters_so_far >= 40000:  # original hp in BEAR codebase
+            actr_loss = (-neg_actr_loss + (alpha * (mmd_loss - 0.05))).mean()
+        else:
+            actr_loss = (alpha * (mmd_loss - 0.05)).mean()
 
         self.actr_opt.zero_grad()
-        actr_loss.backward()
+        actr_loss.backward(retain_graph=True)
         average_gradients(self.actr, self.device)
         if self.hps.clip_norm > 0:
             U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
         self.actr_opt.step()
         self.actr_sched.step(iters_so_far)
+
+        if self.hps.use_adaptive_alpha:
+            self.w_opt.zero_grad()
+            (-actr_loss).backward()
+            self.w_opt.step()
+            self.w.detach().clamp_(min=-5.0, max=10.0)
 
         # Update target nets
         self.update_target_net(iters_so_far)
@@ -346,12 +407,44 @@ class BCQAgent(object):
             metrics['twin_loss'].append(twin_loss)
         if self.hps.prioritized_replay:
             metrics['iws'].append(iws)
+        metrics['squashed_action_loss'].append(squashed_action_loss)
+        metrics['action_loss'].append(action_loss)
         metrics['actr_loss'].append(actr_loss)
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': self.actr_sched.get_last_lr()}
 
         return metrics, lrnows
+
+    def mmd_loss_laplacian(self, input_a, input_b, sigma=10.):
+        """Assemble the MMD constraint with Laplacian kernel for support matching"""
+        # sigma is set to 20.0 for hopper, cheetah and 50 for walker/ant
+        diff_x_x = input_a.unsqueeze(2) - input_a.unsqueeze(1)  # B x N x N x d
+        diff_x_x = torch.mean((-(diff_x_x.abs()).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
+
+        diff_x_y = input_a.unsqueeze(2) - input_b.unsqueeze(1)
+        diff_x_y = torch.mean((-(diff_x_y.abs()).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
+
+        diff_y_y = input_b.unsqueeze(2) - input_b.unsqueeze(1)  # B x N x N x d
+        diff_y_y = torch.mean((-(diff_y_y.abs()).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
+
+        overall_loss = (diff_x_x + diff_y_y - 2.0 * diff_x_y + 1e-6).sqrt()
+        return overall_loss
+
+    def mmd_loss_gaussian(self, input_a, input_b, sigma=10.):
+        """Assemble the MMD constraint with Gaussian Kernel support matching"""
+        # sigma is set to 20.0 for hopper, cheetah and 50 for walker/ant
+        diff_x_x = input_a.unsqueeze(2) - input_a.unsqueeze(1)  # B x N x N x d
+        diff_x_x = torch.mean((-(diff_x_x.pow(2)).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
+
+        diff_x_y = input_a.unsqueeze(2) - input_b.unsqueeze(1)
+        diff_x_y = torch.mean((-(diff_x_y.pow(2)).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
+
+        diff_y_y = input_b.unsqueeze(2) - input_b.unsqueeze(1)  # B x N x N x d
+        diff_y_y = torch.mean((-(diff_y_y.pow(2)).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
+
+        overall_loss = (diff_x_x + diff_y_y - 2.0 * diff_x_y + 1e-6).sqrt()
+        return overall_loss
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

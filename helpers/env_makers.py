@@ -5,6 +5,9 @@ import gym
 from helpers import logger
 import environments
 
+os.environ["D4RL_SUPPRESS_IMPORT_ERROR"] = "1"
+import d4rl  # noqa, import required to register environments
+
 
 def get_benchmark(env_id):
     """Verify that the specified env is amongst the admissible ones"""
@@ -45,10 +48,5 @@ def make_env(env_id, seed):
 
     env = gym.make(env_id)
     env.seed(seed)
-
-    if benchmark == 'mujoco':
-        pass  # weird, but struct kept general if adding other envs
-    else:
-        raise ValueError('unsupported benchmark')
 
     return env

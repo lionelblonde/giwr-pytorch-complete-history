@@ -14,7 +14,7 @@ parser = argparse.ArgumentParser(description="Job Spawner")
 parser.add_argument('--config', type=str, default=None)
 parser.add_argument('--envset', type=str, default=None)
 parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
-boolean_flag(parser, 'long', default=False, help="long duration?")
+parser.add_argument('--caliber', type=str, default=None)
 boolean_flag(parser, 'call', default=False, help="launch immediately?")
 boolean_flag(parser, 'sweep', default=False, help="hp search?")
 args = parser.parse_args()
@@ -24,12 +24,16 @@ CONFIG = yaml.safe_load(open(args.config))
 
 # Extract parameters from config
 NUM_SEEDS = CONFIG['parameters']['num_seeds']
-# NEED_DEMOS = CONFIG['parameters']['use_expert_demos']  # FIXME
-NEED_DEMOS = False  # FIXME
+NEED_DEMOS = CONFIG['parameters']['use_expert_demos']
+assert not NEED_DEMOS or CONFIG['parameters']['offline']
+NEED_DSETS = False
 if NEED_DEMOS:
     NUM_DEMOS = [int(i) for i in args.num_demos]
 else:
     NUM_DEMOS = [0]  # arbitrary, only used for dim checking
+    # If we are not using demos but are in the offline setting, need datasets
+    if CONFIG['parameters']['offline']:
+        NEED_DSETS = True
 CLUSTER = CONFIG['resources']['cluster']
 WANDB_PROJECT = CONFIG['resources']['wandb_project'].upper() + '-' + CLUSTER.upper()
 CONDA = CONFIG['resources']['conda_env']
@@ -42,17 +46,43 @@ BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
              'n_step_returns', 'ret_norm', 'popart',
              'clipped_double', 'targ_actor_smoothing',
              'use_c51', 'use_qr',
-             'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
-             'wrap_absorb', 'd_batch_norm',
-             'historical_patching',
-             'kye_p', 'kye_mixing', 'adaptive_aux_scaling',
-             'red_batch_norm', 'rnd_explo', 'rnd_batch_norm', 'kye_batch_norm', 'dyn_batch_norm',
-             'use_purl']
+             'offline', 'use_expert_demos',
+             'use_adaptive_alpha', 'stochastic']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
 
+# Define the caliber got the distribution scheme
+if args.caliber == 'monoshort':
+    PARTITION = 'shared-EL7'
+    NUM_WORKERS = 1
+    TIMEOUT = '0-12:00:00'
+elif args.caliber == 'monolong':
+    PARTITION = 'mono-EL7'
+    NUM_WORKERS = 1
+    TIMEOUT = '2-00:00:00'
+elif args.caliber == 'monoverylong':
+    PARTITION = 'mono-EL7'
+    NUM_WORKERS = 1
+    TIMEOUT = '4-00:00:00'
+elif args.caliber == 'multishort':
+    PARTITION = 'shared-EL7'
+    NUM_WORKERS = 16
+    TIMEOUT = '0-12:00:00'
+elif args.caliber == 'multilong':
+    PARTITION = 'mono-EL7'
+    NUM_WORKERS = 16
+    TIMEOUT = '2-00:00:00'
+elif args.caliber == 'multiverylong':
+    PARTITION = 'mono-EL7'
+    NUM_WORKERS = 16
+    TIMEOUT = '4-00:00:00'
+else:
+    raise ValueError("invalid caliber")
+
+
 if BENCH == 'mujoco':
+
     # Define environments map
     TOC = {
         'debug': ['Hopper-v3'],
@@ -79,36 +109,37 @@ if BENCH == 'mujoco':
             'InvertedPendulum': 'shared-EL7',
             'Reacher': 'shared-EL7',
             'InvertedDoublePendulum': 'shared-EL7',
-            'Hopper': 'mono-EL7' if args.long else 'shared-EL7',
-            'Walker2d': 'mono-EL7' if args.long else 'shared-EL7',
-            'HalfCheetah': 'mono-EL7' if args.long else 'shared-EL7',
-            'Ant': 'mono-EL7' if args.long else 'shared-EL7',
-            'Humanoid': 'mono-EL7' if args.long else 'shared-EL7',
+            'Hopper': PARTITION,
+            'Walker2d': PARTITION,
+            'HalfCheetah': PARTITION,
+            'Ant': PARTITION,
+            'Humanoid': PARTITION,
         }
         # Define per-environment ntasks map
         PEC = {
-            'InvertedPendulum': '8',
-            'Reacher': '8',
-            'InvertedDoublePendulum': '8',
-            'Hopper': '16',
-            'Walker2d': '16',
-            'HalfCheetah': '16',
-            'Ant': '16',
-            'Humanoid': '16',
+            'InvertedPendulum': 8,
+            'Reacher': 8,
+            'InvertedDoublePendulum': 8,
+            'Hopper': NUM_WORKERS,
+            'Walker2d': NUM_WORKERS,
+            'HalfCheetah': NUM_WORKERS,
+            'Ant': NUM_WORKERS,
+            'Humanoid': NUM_WORKERS,
         }
         # Define per-environment timeouts map
         PET = {
             'InvertedPendulum': '0-06:00:00',
             'Reacher': '0-06:00:00',
             'InvertedDoublePendulum': '0-06:00:00',
-            'Hopper': '2-00:00:00' if args.long else '0-12:00:00',
-            'Walker2d': '2-00:00:00' if args.long else '0-12:00:00',
-            'HalfCheetah': '2-00:00:00' if args.long else '0-12:00:00',
-            'Ant': '2-00:00:00' if args.long else '0-12:00:00',
-            'Humanoid': '2-00:00:00' if args.long else '0-12:00:00',
+            'Hopper': TIMEOUT,
+            'Walker2d': TIMEOUT,
+            'HalfCheetah': TIMEOUT,
+            'Ant': TIMEOUT,
+            'Humanoid': TIMEOUT,
         }
 
 elif BENCH == 'dmc':
+
     TOC = {
         'debug': ['Hopper-Hop-Feat-v0'],
         'flareon': ['Hopper-Hop-Feat-v0',
@@ -128,64 +159,102 @@ elif BENCH == 'dmc':
                  'Quadruped-Fetch-Feat-v0'],
         'dog': ['Dog-Run-Feat-v0',
                 'Dog-Fetch-Feat-v0'],
+        'suite': ['Hopper-Hop-Feat-v0',
+                  'Cheetah-Run-Feat-v0',
+                  'Walker-Run-Feat-v0',
+                  'Quadruped-Walk-Feat-v0',
+                  'Quadruped-Run-Feat-v0',
+                  'Quadruped-Escape-Feat-v0',
+                  'Quadruped-Fetch-Feat-v0'],
     }
     ENVS = TOC[args.envset]
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
         PEP = {
-            'Hopper-Hop-Feat': 'shared-EL7,mono-shared-EL7',
-            'Walker-Run-Feat': 'shared-EL7,mono-shared-EL7',
-            'Cheetah-Run-Feat': 'shared-EL7,mono-shared-EL7',
-            'Stacker-Stack_2-Feat': 'shared-EL7,mono-shared-EL7',
-            'Stacker-Stack_4-Feat': 'shared-EL7,mono-shared-EL7',
-            'Humanoid-Walk-Feat': 'shared-EL7,mono-shared-EL7',
-            'Humanoid-Run-Feat': 'shared-EL7,mono-shared-EL7',
-            'Humanoid_CMU-Stand-Feat': 'shared-EL7,mono-shared-EL7',
-            'Humanoid_CMU-Run-Feat': 'shared-EL7,mono-shared-EL7',
-            'Quadruped-Walk-Feat': 'shared-EL7,mono-shared-EL7',
-            'Quadruped-Run-Feat': 'shared-EL7,mono-shared-EL7',
-            'Quadruped-Escape-Feat': 'shared-EL7,mono-shared-EL7',
-            'Quadruped-Fetch-Feat': 'shared-EL7,mono-shared-EL7',
-            'Dog-Run-Feat': 'shared-EL7,mono-shared-EL7',
-            'Dog-Fetch-Feat': 'shared-EL7,mono-shared-EL7',
+            'Hopper-Hop-Feat': PARTITION,
+            'Walker-Run-Feat': PARTITION,
+            'Cheetah-Run-Feat': PARTITION,
+            'Stacker-Stack_2-Feat': PARTITION,
+            'Stacker-Stack_4-Feat': PARTITION,
+            'Humanoid-Walk-Feat': PARTITION,
+            'Humanoid-Run-Feat': PARTITION,
+            'Humanoid_CMU-Stand-Feat': PARTITION,
+            'Humanoid_CMU-Run-Feat': PARTITION,
+            'Quadruped-Walk-Feat': PARTITION,
+            'Quadruped-Run-Feat': PARTITION,
+            'Quadruped-Escape-Feat': PARTITION,
+            'Quadruped-Fetch-Feat': PARTITION,
+            'Dog-Run-Feat': PARTITION,
+            'Dog-Fetch-Feat': PARTITION,
         }
         # Define per-environment ntasks map
         PEC = {
-            'Hopper-Hop-Feat': 1,
-            'Walker-Run-Feat': 1,
-            'Cheetah-Run-Feat': 1,
-            'Stacker-Stack_2-Feat': 1,
-            'Stacker-Stack_4-Feat': 1,
-            'Humanoid-Walk-Feat': 1,
-            'Humanoid-Run-Feat': 1,
-            'Humanoid_CMU-Stand-Feat': 1,
-            'Humanoid_CMU-Run-Feat': 1,
-            'Quadruped-Walk-Feat': 1,
-            'Quadruped-Run-Feat': 1,
-            'Quadruped-Escape-Feat': 1,
-            'Quadruped-Fetch-Feat': 1,
-            'Dog-Run-Feat': 1,
-            'Dog-Fetch-Feat': 1,
+            'Hopper-Hop-Feat': NUM_WORKERS,
+            'Walker-Run-Feat': NUM_WORKERS,
+            'Cheetah-Run-Feat': NUM_WORKERS,
+            'Stacker-Stack_2-Feat': NUM_WORKERS,
+            'Stacker-Stack_4-Feat': NUM_WORKERS,
+            'Humanoid-Walk-Feat': NUM_WORKERS,
+            'Humanoid-Run-Feat': NUM_WORKERS,
+            'Humanoid_CMU-Stand-Feat': NUM_WORKERS,
+            'Humanoid_CMU-Run-Feat': NUM_WORKERS,
+            'Quadruped-Walk-Feat': NUM_WORKERS,
+            'Quadruped-Run-Feat': NUM_WORKERS,
+            'Quadruped-Escape-Feat': NUM_WORKERS,
+            'Quadruped-Fetch-Feat': NUM_WORKERS,
+            'Dog-Run-Feat': NUM_WORKERS,
+            'Dog-Fetch-Feat': NUM_WORKERS,
         }
         # Define per-environment timeouts map
         PET = {
-            'Hopper-Hop-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Walker-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Cheetah-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Stacker-Stack_2-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Stacker-Stack_4-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Humanoid-Walk-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Humanoid-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Humanoid_CMU-Stand-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Humanoid_CMU-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Quadruped-Walk-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Quadruped-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Quadruped-Escape-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Quadruped-Fetch-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Dog-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
-            'Dog-Fetch-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Hopper-Hop-Feat': TIMEOUT,
+            'Walker-Run-Feat': TIMEOUT,
+            'Cheetah-Run-Feat': TIMEOUT,
+            'Stacker-Stack_2-Feat': TIMEOUT,
+            'Stacker-Stack_4-Feat': TIMEOUT,
+            'Humanoid-Walk-Feat': TIMEOUT,
+            'Humanoid-Run-Feat': TIMEOUT,
+            'Humanoid_CMU-Stand-Feat': TIMEOUT,
+            'Humanoid_CMU-Run-Feat': TIMEOUT,
+            'Quadruped-Walk-Feat': TIMEOUT,
+            'Quadruped-Run-Feat': TIMEOUT,
+            'Quadruped-Escape-Feat': TIMEOUT,
+            'Quadruped-Fetch-Feat': TIMEOUT,
+            'Dog-Run-Feat': TIMEOUT,
+            'Dog-Fetch-Feat': TIMEOUT,
         }
+
+elif BENCH == 'd4rl':
+
+    TOC = {
+        'debug': ['halfcheetah-medium-v0'],
+        'flareon': ['halfcheetah-random-v0',
+                    'halfcheetah-medium-v0',
+                    'halfcheetah-expert-v0',
+                    'halfcheetah-medium-replay-v0',
+                    'halfcheetah-medium-expert-v0',
+                    'walker2d-random-v0',
+                    'walker2d-medium-v0',
+                    'walker2d-expert-v0',
+                    'walker2d-medium-replay-v0',
+                    'walker2d-medium-expert-v0'],
+        'antmaze': ['antmaze-umaze-v0',
+                    'antmaze-umaze-diverse-v0',
+                    'antmaze-medium-play-v0',
+                    'antmaze-medium-diverse-v0',
+                    'antmaze-large-play-v0',
+                    'antmaze-large-diverse-v0'],
+    }
+    ENVS = TOC[args.envset]
+
+    if CLUSTER == 'baobab':
+        # Define per-environement partitions map
+        PEP = {k.split('-v')[0]: PARTITION for k in ENVS}
+        # Define per-environment ntasks map
+        PEC = {k.split('-v')[0]: NUM_WORKERS for k in ENVS}
+        # Define per-environment timeouts map
+        PET = {k.split('-v')[0]: TIMEOUT for k in ENVS}
 
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
@@ -195,6 +264,10 @@ assert bool(TOC), "each benchmark must have a 'TOC' dictionary"
 if NEED_DEMOS:
     demo_dir = os.environ['DEMO_DIR']
     DEMOS = {k: os.path.join(demo_dir, k) for k in ENVS}
+# If needed, create the list of datasets
+if NEED_DSETS:
+    d4rl_dir = os.environ['D4RL_DIR']
+    DSETS = {k: os.path.join(d4rl_dir, k + '.h5') for k in ENVS}
 
 
 def copy_and_add_seed(hpmap, seed):
@@ -227,10 +300,12 @@ def copy_and_add_seed(hpmap, seed):
 
 def copy_and_add_env(hpmap, env):
     hpmap_ = deepcopy(hpmap)
-    # Add the env and demos
+    # Add the env and demos or dataset
     hpmap_.update({'env_id': env})
     if NEED_DEMOS:
         hpmap_.update({'expert_path': DEMOS[env]})
+    if NEED_DSETS:
+        hpmap_.update({'dataset_path': DSETS[env]})
     return hpmap_
 
 
@@ -258,13 +333,14 @@ def get_hps(sweep):
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
+            'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
+            'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 400))),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
-            'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
+            'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
 
             # Model
             'layer_norm': CONFIG['parameters']['layer_norm'],
@@ -314,6 +390,18 @@ def get_hps(sweep):
             'c51_vmin': CONFIG['parameters'].get('c51_vmin', -10.),
             'c51_vmax': CONFIG['parameters'].get('c51_vmax', 10.),
             'num_tau': np.random.choice([100, 200]),
+
+            # Offline RL
+            'offline': CONFIG['parameters']['offline'],
+            'use_expert_demos': CONFIG['parameters']['use_expert_demos'],
+            'sub_rate': CONFIG['parameters']['sub_rate'],
+
+            # SAC, BCQ, BEAR
+            'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
+            'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
+            'stochastic': CONFIG['parameters'].get('stochastic', False),
+            'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
+            'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
         }
     else:
         # No search, fixed map
@@ -327,20 +415,21 @@ def get_hps(sweep):
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
+            'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
+            'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 400))),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
-            'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
+            'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
 
             # Model
             'layer_norm': CONFIG['parameters']['layer_norm'],
 
             # Optimization
-            'actor_lr': float(CONFIG['parameters'].get('actor_lr', 3e-4)),
-            'critic_lr': float(CONFIG['parameters'].get('critic_lr', 3e-4)),
+            'actor_lr': float(CONFIG['parameters'].get('actor_lr', 1e-4)),
+            'critic_lr': float(CONFIG['parameters'].get('critic_lr', 1e-4)),
             'with_scheduler': CONFIG['parameters']['with_scheduler'],
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(CONFIG['parameters'].get('wd_scale', 3e-4)),
@@ -349,8 +438,8 @@ def get_hps(sweep):
             'rollout_len': CONFIG['parameters'].get('rollout_len', 2),
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
             'gamma': CONFIG['parameters'].get('gamma', 0.99),
-            'mem_size': int(CONFIG['parameters'].get('mem_size', 100000)),
-            'noise_type': CONFIG['parameters']['noise_type'],
+            'mem_size': int(float(CONFIG['parameters'].get('mem_size', 100000))),
+            'noise_type': CONFIG['parameters'].get('noise_type', 'none'),
             'pn_adapt_frequency': CONFIG['parameters'].get('pn_adapt_frequency', 50),
             'polyak': CONFIG['parameters'].get('polyak', 0.005),
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
@@ -380,6 +469,18 @@ def get_hps(sweep):
             'c51_vmin': CONFIG['parameters'].get('c51_vmin', -10.),
             'c51_vmax': CONFIG['parameters'].get('c51_vmax', 10.),
             'num_tau': CONFIG['parameters'].get('num_tau', 200),
+
+            # Offline RL
+            'offline': CONFIG['parameters']['offline'],
+            'use_expert_demos': CONFIG['parameters']['use_expert_demos'],
+            'sub_rate': CONFIG['parameters']['sub_rate'],
+
+            # SAC, BCQ, BEAR
+            'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
+            'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
+            'stochastic': CONFIG['parameters'].get('stochastic', False),
+            'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
+            'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
         }
 
     # Duplicate for each environment
@@ -446,6 +547,8 @@ def create_job_str(name, command, envkey):
         bash_script_str += ('\n')
         # Load modules
         bash_script_str += ('module load GCC/8.3.0 OpenMPI/3.1.4\n')
+        if BENCH in ['dmc', 'd4rl']:
+            bash_script_str += ('module load Mesa/19.2.1\n')
         if CONFIG['parameters']['cuda']:
             bash_script_str += ('module load CUDA\n')
         bash_script_str += ('\n')
@@ -532,6 +635,8 @@ def run(args):
                         'windows': []}
         if NEED_DEMOS:
             yaml_content.update({'environment': {'DEMO_DIR': os.environ['DEMO_DIR']}})
+        if NEED_DSETS:
+            yaml_content.update({'environment': {'D4RL_DIR': os.environ['D4RL_DIR']}})
         for i, name in enumerate(names):
             executable = "{}.sh".format(name)
             pane = {'shell_command': ["source activate {}".format(CONDA),

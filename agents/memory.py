@@ -1,6 +1,5 @@
 import random
 from math import floor
-from copy import deepcopy
 from collections import defaultdict
 
 import numpy as np
@@ -49,7 +48,7 @@ class RingBuffer(object):
 
 class ReplayBuffer(object):
 
-    def __init__(self, capacity, shapes, save_full_history=False):
+    def __init__(self, capacity, shapes, save_full_history):
         self.capacity = capacity
         self.shapes = shapes
         self.ring_buffers = {n: RingBuffer(self.capacity, s) for n, s in self.shapes.items()}
@@ -173,12 +172,14 @@ class ReplayBuffer(object):
         load_size = to_load_in_memory['rews'].shape[0]
         assert load_size == self.capacity  # memory size has been overwritten with it
         assert self.ring_buffers.keys() == to_load_in_memory.keys(), "keys must coincide"
+        # Load the file's content in the replay buffer
         for k in self.ring_buffers.keys():
-            # Load the file's content in the replay buffer
-            self.ring_buffers[k] = deepcopy(to_load_in_memory[k])
+            for i in range(load_size):
+                self.ring_buffers[k].append(to_load_in_memory[k][i])
         logger.info("loaded replay buffer: {}/{} ({}%)".format(load_size,
                                                                self.capacity,
                                                                100 * load_size // self.capacity))
+        assert self.num_entries > 0, "the replay buffer should not be empty"
 
     def __repr__(self):
         return "ReplayBuffer(capacity={})".format(self.capacity)
@@ -200,14 +201,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     Reference: https://arxiv.org/pdf/1511.05952.pdf
     """
 
-    def __init__(self, capacity, shapes,
+    def __init__(self, capacity, shapes, save_full_history,
                  alpha, beta, ranked=False, max_priority=1.0):
         """`alpha` determines how much prioritization is used
         0: none, equivalent to uniform sampling
         1: full prioritization
         `beta` (defined in `__init__`) represents to what degree importance weights are used.
         """
-        super(PrioritizedReplayBuffer, self).__init__(capacity, shapes)
+        super(PrioritizedReplayBuffer, self).__init__(capacity, shapes, save_full_history)
         assert 0. <= alpha <= 1.
         assert beta > 0, "beta must be positive"
         self.alpha = alpha
@@ -374,13 +375,13 @@ class UnrealReplayBuffer(PrioritizedReplayBuffer):
     Reference: https://arxiv.org/pdf/1611.05397.pdf
     """
 
-    def __init__(self, capacity, shapes, max_priority=1.0):
+    def __init__(self, capacity, shapes, save_full_history, max_priority=1.0):
         """Reuse of the 'PrioritizedReplayBuffer' constructor w/:
             - `alpha` arbitrarily set to 1. (unused)
             - `beta` arbitrarily set to 1. (unused)
             - `ranked` set to True (necessary to have access to the ranks)
         """
-        super(UnrealReplayBuffer, self).__init__(capacity, shapes,
+        super(UnrealReplayBuffer, self).__init__(capacity, shapes, save_full_history,
                                                  1., 1, True, max_priority)
         # Create two extra `SumSegmentTree` objects: one for 'bad' transitions, one for 'good' ones
         self.b_sum_st = SumSegmentTree(self.st_cap)  # with `operator.add` operation

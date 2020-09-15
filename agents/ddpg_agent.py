@@ -1,17 +1,17 @@
 from collections import namedtuple, defaultdict
 import os.path as osp
+import math
 
 import numpy as np
 import torch
 import torch.nn.utils as U
 import torch.nn.functional as F
-from torch import autograd
-from torch.autograd import Variable
 
 from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.math_util import huber_quant_reg_loss
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
+from helpers import h5_util as H
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import Actor, Critic
 from agents.param_noise import AdaptiveParamNoise
@@ -202,6 +202,7 @@ class DDPGAgent(object):
                 replay_buffer = UnrealReplayBuffer(
                     self.hps.mem_size,
                     shapes,
+                    save_full_history=not self.hps.offline,
                 )
             else:  # Vanilla prioritized experience replay
                 replay_buffer = PrioritizedReplayBuffer(
@@ -210,6 +211,7 @@ class DDPGAgent(object):
                     alpha=self.hps.alpha,
                     beta=self.hps.beta,
                     ranked=self.hps.ranked,
+                    save_full_history=not self.hps.offline,
                 )
         else:  # Vanilla experience replay
             replay_buffer = ReplayBuffer(
@@ -259,7 +261,7 @@ class DDPGAgent(object):
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                _patcher,  # TODO
+                # _patcher,  # TODO
                 None,
             )
         return batch
@@ -441,8 +443,8 @@ class DDPGAgent(object):
                            0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCQ
             targ_q = (reward +
                       (self.hps.gamma ** td_len) * (1. - done) *
-                      self.denorm_rets(q_prime).detach())
-            targ_q = self.norm_rets(targ_q)
+                      self.denorm_rets(q_prime))
+            targ_q = self.norm_rets(targ_q).detach()
 
             if self.hps.ret_norm:
                 if self.hps.popart:
@@ -552,7 +554,11 @@ class DDPGAgent(object):
         """Adapt the parameter noise standard deviation"""
 
         # Perturb separate copy of the policy to adjust the scale for the next 'real' perturbation
-        batch = self.replay_buffer.sample(self.hps.batch_size, patcher=None)
+        batch = self.replay_buffer.sample(
+            self.hps.batch_size,
+            # _patcher,  # TODO
+            None,
+        )
         state = torch.Tensor(batch['obs0']).to(self.device)
         # Update the perturbable params
         for p in self.actr.perturbable_params:
@@ -566,8 +572,6 @@ class DDPGAgent(object):
             self.apnp_actr.state_dict()[p].data.copy_(param.data)
 
         # Compute distance between actor and adaptive-parameter-noise-perturbed actor predictions
-        if self.hps.wrap_absorb:
-            state = self.remove_absorbing(state)[0][:, 0:-1]
         self.pn_dist = torch.sqrt(F.mse_loss(self.actr.act(state), self.apnp_actr.act(state)))
         self.pn_dist = self.pn_dist.cpu().data.numpy()
 
@@ -607,37 +611,43 @@ class DDPGAgent(object):
             optimizer=self.crit_opt.state_dict(),
             scheduler=None,
         )
-        torch.save(actr_bundle._asdict(), osp.join(path, "actr_iter{}.pth".format(iters)))
-        torch.save(crit_bundle._asdict(), osp.join(path, "crit_iter{}.pth".format(iters)))
+        torch.save(actr_bundle._asdict(), osp.join(path, "model_actr_iter{}.pth".format(iters)))
+        torch.save(crit_bundle._asdict(), osp.join(path, "model_crit_iter{}.pth".format(iters)))
         if self.hps.clipped_double:
             twin_bundle = SaveBundle(
                 model=self.twin.state_dict(),
                 optimizer=self.twin_opt.state_dict(),
                 scheduler=None,
             )
-            torch.save(twin_bundle._asdict(), osp.join(path, "twin_iter{}.pth".format(iters)))
+            torch.save(twin_bundle._asdict(), osp.join(path, "model_twin_iter{}.pth".format(iters)))
 
     def load(self, path, iters):
-        actr_bundle = torch.load(osp.join(path, "actr_iter{}.pth".format(iters)))
+        actr_bundle = torch.load(osp.join(path, "model_actr_iter{}.pth".format(iters)))
         self.actr.load_state_dict(actr_bundle['model'])
         self.actr_opt.load_state_dict(actr_bundle['optimizer'])
         self.actr_sched.load_state_dict(actr_bundle['scheduler'])
-        crit_bundle = torch.load(osp.join(path, "crit_iter{}.pth".format(iters)))
+        crit_bundle = torch.load(osp.join(path, "model_crit_iter{}.pth".format(iters)))
         self.crit.load_state_dict(crit_bundle['model'])
         self.crit_opt.load_state_dict(crit_bundle['optimizer'])
         if self.hps.clipped_double:
-            twin_bundle = torch.load(osp.join(path, "twin_iter{}.pth".format(iters)))
+            twin_bundle = torch.load(osp.join(path, "model_twin_iter{}.pth".format(iters)))
             self.twin.load_state_dict(twin_bundle['model'])
             self.twin_opt.load_state_dict(twin_bundle['optimizer'])
 
     def save_memory(self, path, iters):
         assert not self.hps.offline, "can only save buffers using the online version"
-        U.save_dict_h5py(self.replay_buffer.ring_buffers,
-                         osp.join(path, "buffer_iter{}.h5".format(iters)))
+        replay_buffer = {k: v.data for k, v in self.replay_buffer.ring_buffers.items()}
+        _size = self.replay_buffer.num_entries
+        size = str(_size).zfill(math.floor(math.log10(self.hps.mem_size)) + 1)
+        pct = str(math.floor(100 * _size / self.hps.mem_size))
+        fmtstr = "replay_buffer_iter{}_size{}_{}pct.h5"
+        H.save_dict_h5py(replay_buffer, osp.join(path, fmtstr.format(iters, size, pct)))
 
     def save_full_history(self, path, iters):
         assert not self.hps.offline, "can only save buffers using the online version"
         # Transform the values (lists) of the dictionary into numpy arrays
         full_history = {k: np.array(v) for k, v in self.replay_buffer.full_history.items()}
-        U.save_dict_h5py(full_history,
-                         osp.join(path, "history_iter{}.h5".format(iters)))
+        _size = full_history['obs0'].shape[0]
+        size = str(_size).zfill(math.floor(math.log10(self.hps.mem_size)) + 1)
+        fmtstr = "replay_history_iter{}_size{}.h5"
+        H.save_dict_h5py(full_history, osp.join(path, fmtstr.format(iters, size)))

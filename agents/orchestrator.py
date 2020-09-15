@@ -1,5 +1,5 @@
 import time
-from copy import deepcopy
+from copy import copy, deepcopy
 import os
 import os.path as osp
 from collections import defaultdict, deque
@@ -13,14 +13,13 @@ from helpers import logger
 from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video
 
-from agents.ddpg_agent import DDPGAgent
 
-
-def rollout_generator(env, agent, rollout_len):
+def rollout_generator(env, agent, rollout_len, use_noise_process):
 
     t = 0
-    # Reset agent's noise process
-    agent.reset_noise()
+    if use_noise_process:
+        # Reset agent's noise process
+        agent.reset_noise()
     # Reset agent's env
     ob = np.array(env.reset())
 
@@ -36,77 +35,25 @@ def rollout_generator(env, agent, rollout_len):
             yield
 
         # Interact with env(s)
-        new_ob, _, done, _ = env.step(ac)
+        new_ob, rew, done, _ = env.step(ac)
 
-        if agent.hps.wrap_absorb:
-            _ob = np.append(ob, 0)
-            _ac = np.append(ac, 0)
-            if done and not env._elapsed_steps == env._max_episode_steps:
-                # Wrap with an absorbing state
-                _new_ob = np.append(np.zeros(agent.ob_shape), 1)
-                _rew = agent.get_syn_rew(_ob[None], _ac[None], _new_ob[None])
-                _rew = np.asscalar(_rew.cpu().numpy().flatten())
-                transition = {
-                    "obs0": _ob,
-                    "acs": _ac,
-                    "obs1": _new_ob,
-                    "rews": _rew,
-                    "dones1": done,
-                    "obs0_orig": ob,
-                    "acs_orig": ac,
-                    "obs1_orig": new_ob,
-                }
-                agent.store_transition(transition)
-                # Add absorbing transition
-                _ob_a = np.append(np.zeros(agent.ob_shape), 1)
-                _ac_a = np.append(np.zeros(agent.ac_shape), 1)
-                _new_ob_a = np.append(np.zeros(agent.ob_shape), 1)
-                _rew_a = agent.get_syn_rew(_ob_a[None], _ac_a[None], _new_ob_a[None])
-                _rew_a = np.asscalar(_rew_a.cpu().numpy().flatten())
-                transition_a = {
-                    "obs0": _ob_a,
-                    "acs": _ac_a,
-                    "obs1": _new_ob_a,
-                    "rews": _rew_a,
-                    "dones1": done,
-                    "obs0_orig": ob,  # from previous transition, with reward eval on absorbing
-                    "acs_orig": ac,  # from previous transition, with reward eval on absorbing
-                    "obs1_orig": new_ob,  # from previous transition, with reward eval on absorbing
-                }
-                agent.store_transition(transition_a)
-            else:
-                _new_ob = np.append(new_ob, 0)
-                _rew = agent.get_syn_rew(_ob[None], _ac[None], _new_ob[None])
-                _rew = np.asscalar(_rew.cpu().numpy().flatten())
-                transition = {
-                    "obs0": _ob,
-                    "acs": _ac,
-                    "obs1": _new_ob,
-                    "rews": _rew,
-                    "dones1": done,
-                    "obs0_orig": ob,
-                    "acs_orig": ac,
-                    "obs1_orig": new_ob,
-                }
-                agent.store_transition(transition)
-        else:
-            rew = agent.get_syn_rew(ob[None], ac[None], new_ob[None])
-            rew = np.asscalar(rew.cpu().numpy().flatten())
-            transition = {
-                "obs0": ob,
-                "acs": ac,
-                "obs1": new_ob,
-                "rews": rew,
-                "dones1": done,
-            }
-            agent.store_transition(transition)
+        # Assemble and store transition in memory
+        transition = {
+            "obs0": ob,
+            "acs": ac,
+            "obs1": new_ob,
+            "rews": rew,
+            "dones1": done,
+        }
+        agent.store_transition(transition)
 
         # Set current state with the next
         ob = np.array(deepcopy(new_ob))
 
         if done:
-            # Reset agent's noise process
-            agent.reset_noise()
+            if use_noise_process:
+                # Reset agent's noise process
+                agent.reset_noise()
             # Reset agent's env
             ob = np.array(env.reset())
 
@@ -184,24 +131,26 @@ def ep_generator(env, agent, render, record):
                 obs_render = []
             acs = []
             env_rews = []
-            agent.reset_noise()
             ob = np.array(env.reset())
 
             if record:
                 ob_orig = _render()
 
 
-def evaluate(args, device, env):
+def evaluate(args,
+             env,
+             agent_wrapper,
+             experiment_name):
 
-    # Rebuild the computational graph
     # Create an agent
-    agent = Agent(env=env,
-                  device=device,
-                  hps=args,
-                  to_load_in_memory=None)
+    agent = agent_wrapper()
+
     # Create episode generator
     ep_gen = ep_generator(env, agent, args.render)
-    # Initialize and load the previously learned weights into the freshly re-built graph
+
+    if args.record:
+        vid_dir = osp.join(args.video_dir, experiment_name)
+        os.makedirs(vid_dir, exist_ok=True)
 
     # Load the model
     agent.load(args.model_path, args.iter_num)
@@ -218,6 +167,10 @@ def evaluate(args, device, env):
         # Aggregate to the history data structures
         ep_lens.append(ep_len)
         ep_env_rets.append(ep_env_ret)
+        if args.record:
+            # Record a video of the episode
+            record_video(vid_dir, i, traj['obs_render'])
+
     # Log some statistics of the collected trajectories
     ep_len_mean = np.mean(ep_lens)
     ep_env_ret_mean = np.mean(ep_env_rets)
@@ -226,9 +179,38 @@ def evaluate(args, device, env):
     logger.dump_tabular()
 
 
-def generate_buffer(args, device, env):
+def generate_buffer(args,
+                    env,
+                    agent_wrapper,
+                    experiment_name):
 
-    raise NotImplementedError  # TODO
+    # Set up where to save the exploration data
+    explo_dir = osp.join(args.exploration_dir, experiment_name)
+    os.makedirs(explo_dir, exist_ok=True)
+
+    # Create an agent
+    agent = agent_wrapper()
+
+    # Log the type of exploration used by the agent
+    logger.info("parameter noise used: {}".format(agent.param_noise))
+    logger.info("action noise used: {}".format(agent.ac_noise))
+
+    # Create episode generator
+    roll_gen = rollout_generator(env, agent, rollout_len=args.gen_buffer_size)
+    # Note, we only need to generate once from the generator (no training).
+
+    # Load the model
+    agent.load(args.model_path, args.iter_num)
+    logger.info("model loaded from path:\n  {}".format(args.model_path))
+
+    # Generate rollout to populate the replay buffer
+    roll_gen.__next__()  # no need to get the returned rollout, stored in buffer
+
+    print(agent.replay_buffer.num_entries)
+
+    # Save the data on disk
+    agent.save_full_history(explo_dir, "0-generated")  # technically no training is done here
+    # Note, we use the full history method to be sure nothing is flushed
 
 
 def learn(args,
@@ -236,7 +218,8 @@ def learn(args,
           env,
           eval_env,
           agent_wrapper,
-          experiment_name):
+          experiment_name,
+          use_noise_process=None):
 
     # Create an agent
     agent = agent_wrapper()
@@ -258,19 +241,13 @@ def learn(args,
         # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
-        # Save the model as a dry run, to avoid bad surprises at the end
-        agent.save(ckpt_dir, "{}_dryrun".format(iters_so_far))
-        logger.info("dry run. Saving model @: {}".format(ckpt_dir))
         if args.record:
             vid_dir = osp.join(args.video_dir, experiment_name)
             os.makedirs(vid_dir, exist_ok=True)
-
         if not agent.hps.offline:
-            # Set up model save directory
-            behav_dir = osp.join(args.behavior_dir, experiment_name)
-            os.makedirs(behav_dir, exist_ok=True)
-            agent.save(behav_dir, "{}_dryrun".format(iters_so_far))
-            logger.info("dry run. Saving model @: {}".format(behav_dir))
+            # Set up replay save directory
+            replay_dir = osp.join(args.replay_dir, experiment_name)
+            os.makedirs(replay_dir, exist_ok=True)
 
         # Handle timeout signal gracefully
         def timeout(signum, frame):
@@ -285,8 +262,6 @@ def learn(args,
         signal.signal(signal.SIGTERM, timeout)
 
         # Group by everything except the seed, which is last, hence index -1
-        # For 'sam-dac', it groups by uuid + gitSHA + env_id + num_demos,
-        # while for 'ddpg-td3', it groups by uuid + gitSHA + env_id
         group = '.'.join(experiment_name.split('.')[:-1])
 
         # Set up wandb
@@ -309,7 +284,10 @@ def learn(args,
             break
 
     # Create rollout generator for training the agent
-    roll_gen = rollout_generator(env, agent, args.rollout_len)
+    if args.offline:
+        pass
+    else:
+        roll_gen = rollout_generator(env, agent, args.rollout_len, use_noise_process)
     if eval_env is not None:
         assert rank == 0, "non-zero rank mpi worker forbidden here"
         # Create episode generator for evaluating the agent
@@ -332,16 +310,16 @@ def learn(args,
             agent.save(ckpt_dir, iters_so_far)
             logger.info("time to checkpoint. Saving model @: {}".format(ckpt_dir))
             if not agent.hps.offline:
-                # Save the model
-                agent.save(behav_dir, iters_so_far)
-                # Save the replay buffer
-                agent.save_memory(behav_dir, iters_so_far)
-                # Save the full history
-                agent.save_full_history(behav_dir, iters_so_far)
+                # Save the replay buffer and the full history
+                agent.save_memory(replay_dir, iters_so_far)
+                agent.save_full_history(replay_dir, iters_so_far)
 
-        # Sample mini-batch in env with perturbed actor and store transitions
-        with timed("interacting"):
-            roll_gen.__next__()  # no need to get the returned rollout, stored in buffer
+        if args.offline:
+            pass
+        else:
+            # Sample mini-batch in env with perturbed actor and store transitions
+            with timed("interacting"):
+                roll_gen.__next__()  # no need to get the returned rollout, stored in buffer
 
         with timed('training'):
             for training_step in range(args.training_steps_per_iter):
@@ -350,40 +328,28 @@ def learn(args,
                     if training_step % args.pn_adapt_frequency == 0:
                         # Adapt parameter noise
                         agent.adapt_param_noise()
-                        if ((iters_so_far - 1) % args.eval_frequency == 0):
+                        if iters_so_far % args.eval_frequency == 0:
                             # Store the action-space dist between perturbed and non-perturbed
                             d['pn_dist'].append(agent.pn_dist)
                             # Store the new std resulting from the adaption
                             d['pn_cur_std'].append(agent.param_noise.cur_std)
 
-                for _ in range(agent.hps.g_steps):
-                    # Sample a batch of transitions from the replay buffer
-                    batch = agent.sample_batch()
-                    # Update the actor and critic
-                    metrics, lrnows = agent.update_actor_critic(
-                        batch=batch,
-                        update_actor=not bool(iters_so_far % args.actor_update_delay),  # from TD3
-                        iters_so_far=iters_so_far,
-                    )
-                    if ((iters_so_far - 1) % args.eval_frequency == 0):
-                        # Log training stats
-                        d['actr_losses'].append(metrics['actr_loss'])
-                        d['crit_losses'].append(metrics['crit_loss'])
-                        if agent.hps.clipped_double:
-                            d['twin_losses'].append(metrics['twin_loss'])
-                        if agent.hps.prioritized_replay:
-                            iws = metrics['iws']  # last one only
-                        if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                            d['cos_sims_p'].append(metrics['cos_sim_aux'])
-
-                for _ in range(agent.hps.d_steps):
-                    # Sample a batch of transitions from the replay buffer
-                    batch = agent.sample_batch()
-                    # Update the discriminator
-                    metrics = agent.update_discriminator(batch)
-                    if ((iters_so_far - 1) % args.eval_frequency == 0):
-                        # Log training stats
-                        d['disc_losses'].append(metrics['disc_loss'])
+                # Sample a batch of transitions from the replay buffer
+                batch = agent.sample_batch()
+                # Update the actor and critic
+                metrics, lrnows = agent.update_actor_critic(
+                    batch=batch,
+                    update_actor=not bool(iters_so_far % args.actor_update_delay),  # from TD3
+                    iters_so_far=iters_so_far,
+                )
+                if iters_so_far % args.eval_frequency == 0:
+                    # Log training stats
+                    d['actr_losses'].append(metrics['actr_loss'])
+                    d['crit_losses'].append(metrics['crit_loss'])
+                    if agent.hps.clipped_double:
+                        d['twin_losses'].append(metrics['twin_loss'])
+                    if agent.hps.prioritized_replay:
+                        iws = metrics['iws']  # last one only
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -402,17 +368,19 @@ def learn(args,
 
         # Increment counters
         iters_so_far += 1
-        timesteps_so_far += args.rollout_len
+        if args.offline:
+            step = copy(iters_so_far)
+        else:
+            timesteps_so_far += args.rollout_len
+            step = copy(timesteps_so_far)
 
         if rank == 0 and ((iters_so_far - 1) % args.eval_frequency == 0):
 
             # Log stats in csv
-            logger.record_tabular('timestep', timesteps_so_far)
+            logger.record_tabular('timestep', step)
             logger.record_tabular('eval_len', np.mean(d['eval_len']))
             logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
             logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
-            if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
             logger.info("dumping stats in .csv file")
             logger.dump_tabular()
 
@@ -426,30 +394,27 @@ def learn(args,
                 np.quantile(iws, quantiles)
                 wandb.log({"q{}".format(q): np.quantile(iws, q)
                            for q in [0.1, 0.25, 0.5, 0.75, 0.9]},
-                          step=timesteps_so_far)
+                          step=step)
             if agent.param_noise is not None:
                 wandb.log({'pn_dist': np.mean(d['pn_dist']),
                            'pn_cur_std': np.mean(d['pn_cur_std'])},
-                          step=timesteps_so_far)
+                          step=step)
             wandb.log({'actr_loss': np.mean(d['actr_losses']),
                        'actr_lrnow': np.array(lrnows['actr']),
                        'crit_loss': np.mean(d['crit_losses'])},
-                      step=timesteps_so_far)
+                      step=step)
             if agent.hps.clipped_double:
                 wandb.log({'twin_loss': np.mean(d['twin_losses'])},
-                          step=timesteps_so_far)
+                          step=step)
 
             if args.algo == 'sam-dac':
                 wandb.log({'disc_loss': np.mean(d['disc_losses'])},
-                          step=timesteps_so_far)
-                if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                    wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
-                              step=timesteps_so_far)
+                          step=step)
 
             wandb.log({'eval_len': np.mean(d['eval_len']),
                        'eval_env_ret': np.mean(d['eval_env_ret']),
                        'avg_eval_env_ret': np.mean(b_eval)},
-                      step=timesteps_so_far)
+                      step=step)
 
         # Clear the iteration's running stats
         d.clear()
@@ -458,13 +423,12 @@ def learn(args,
         # When running the algorithm online, save behavior policy model once we are done iterating
         if rank == 0:
             # Save the model
-            agent.save(behav_dir, iters_so_far)
-            logger.info("we're done. Saving behavior policy model @: {}".format(behav_dir))
+            agent.save(ckpt_dir, iters_so_far)
+            logger.info("we're done. Saving behavior policy model @: {}".format(ckpt_dir))
             logger.info("bye.")
-            # Save the replay buffer
-            agent.save_memory(behav_dir, iters_so_far)
-            # Save the full history
-            agent.save_full_history(behav_dir, iters_so_far)
+            # Save the replay buffer and the full history
+            agent.save_memory(replay_dir, iters_so_far)
+            agent.save_full_history(replay_dir, iters_so_far)
 
     if rank == 0:
         # Save once we are done iterating

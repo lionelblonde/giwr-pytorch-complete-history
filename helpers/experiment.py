@@ -98,6 +98,10 @@ class ExperimentInitializer:
         if self.args.task == 'eval':
             name += "{}.".format(self.args.task)
             name += "num_trajs_{}.".format(self.args.num_trajs)
+        if self.args.task == 'generate':
+            name += "{}.".format(self.args.task)
+            name += "gen_buffer_size_{}.".format(self.args.gen_buffer_size)
+            name += "model_{}.".format(self.uuid.split('.')[0])
         name += self.args.env_id
-        name += ".seed_{}".format(str(self.args.seed).zfill(2))
+        name += ".seed{}".format(str(self.args.seed).zfill(2))
         return name
