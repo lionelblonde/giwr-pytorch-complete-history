@@ -72,7 +72,7 @@ class DDPGAgent(object):
         # Parse the noise types
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
 
-        # Create online and target nets, and initilize the target nets
+        # Create online and target nets, and initialize the target nets
         self.actr = Actor(self.env, self.hps).to(self.device)
         sync_with_root(self.actr)
         self.targ_actr = Actor(self.env, self.hps).to(self.device)

@@ -22,7 +22,7 @@ parameters:
   num_timesteps: 1e6
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
-  eval_frequency: 1e4
+  eval_frequency: 5e3
 
   # Model
   layer_norm: true

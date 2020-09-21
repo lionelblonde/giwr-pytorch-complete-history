@@ -41,7 +41,7 @@ class BCQAgent(object):
         # Parse the noise types
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
-        # Create online and target nets, and initilize the target nets
+        # Create online and target nets, and initialize the target nets
         self.actr = ActorPhi(self.env, self.hps).to(self.device)
         sync_with_root(self.actr)
         self.targ_actr = ActorPhi(self.env, self.hps).to(self.device)
@@ -87,7 +87,7 @@ class BCQAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=1.0e-3)
+        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=self.hps.vae_lr)
 
         # Set up the learning rate schedule
         def _lr(t):  # flake8: using a def instead of a lambda

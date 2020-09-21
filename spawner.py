@@ -47,7 +47,7 @@ BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
              'clipped_double', 'targ_actor_smoothing',
              'use_c51', 'use_qr',
              'offline', 'use_expert_demos',
-             'use_adaptive_alpha', 'stochastic']
+             'use_adaptive_alpha']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
@@ -397,9 +397,9 @@ def get_hps(sweep):
             'sub_rate': CONFIG['parameters']['sub_rate'],
 
             # SAC, BCQ, BEAR
+            'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
             'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
             'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
-            'stochastic': CONFIG['parameters'].get('stochastic', False),
             'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
             'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
         }
@@ -476,9 +476,9 @@ def get_hps(sweep):
             'sub_rate': CONFIG['parameters']['sub_rate'],
 
             # SAC, BCQ, BEAR
+            'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
             'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
             'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
-            'stochastic': CONFIG['parameters'].get('stochastic', False),
             'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
             'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
         }

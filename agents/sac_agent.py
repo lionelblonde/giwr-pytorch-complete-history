@@ -12,7 +12,7 @@ from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers import h5_util as H
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import TanhGaussActor, Critic
+from agents.nets import TanhGaussActor, Critic2
 
 
 class SACAgent(object):
@@ -43,21 +43,21 @@ class SACAgent(object):
         # Parse the noise types
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
-        # Create online and target nets, and initilize the target nets
-        self.actr = TanhGaussActor(self.env, self.hps, hidden_size=1024).to(self.device)
+        # Create online and target nets, and initialize the target nets
+        self.actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_size=1024).to(self.device)
+        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
-        self.crit = Critic(self.env, self.hps).to(self.device)
+        self.crit = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
         sync_with_root(self.crit)
-        self.targ_crit = Critic(self.env, self.hps).to(self.device)
+        self.targ_crit = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps).to(self.device)
+            self.twin = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic(self.env, self.hps).to(self.device)
+            self.targ_twin = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
@@ -98,8 +98,7 @@ class SACAgent(object):
                                              weight_decay=self.hps.wd_scale)
 
         if self.hps.use_adaptive_alpha:
-            self.w_opt = torch.optim.Adam([self.w],
-                                          lr=self.hps.alpha_lr)
+            self.w_opt = torch.optim.Adam([self.w], lr=self.hps.alpha_lr)
 
         # Set up the learning rate schedule
         def _lr(t):  # flake8: using a def instead of a lambda
@@ -122,6 +121,13 @@ class SACAgent(object):
         if self.hps.clipped_double:
             log_module_info(logger, 'twin', self.crit)
 
+    @property
+    def alpha(self):
+        if self.hps.use_adaptive_alpha:
+            return self.w.exp()
+        else:
+            return self.hps.init_temperature
+
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
         if self.hps.ret_norm:
@@ -137,7 +143,7 @@ class SACAgent(object):
             return x
 
     def setup_replay_buffer(self, shapes):
-        """Setup experiental memory unit"""
+        """Setup experimental memory unit"""
         logger.info(">>>> setting up replay buffer")
         # Create the buffer
         if self.hps.prioritized_replay:
@@ -214,7 +220,10 @@ class SACAgent(object):
         # Create tensor from the state (`require_grad=False` by default)
         ob = torch.Tensor(ob[None]).to(self.device)
         # Predict the action
-        _ac = self.actr.sample(ob) if self.hps.stochastic else self.actr.mode(ob)
+        if apply_noise:
+            _ac = self.actr.sample(ob)
+        else:
+            _ac = self.actr.mode(ob)
         # Gaussian, so mode == mean, can use either interchangeably
         ac = float(self.max_ac) * _ac
         # Place on cpu and collapse into one dimension
@@ -244,13 +253,42 @@ class SACAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
+        if update_actor:
+            # Actor loss
+            action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
+            log_prob = self.actr.logp(state, action_from_actr)
+            q_from_actr = self.crit.QZ(state, action_from_actr)
+            if self.hps.clipped_double:
+                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
+                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+            actr_loss = ((self.alpha * log_prob) - q_from_actr).mean()
+            # Log metrics
+            metrics['actr_loss'].append(actr_loss)
+
+            self.actr_opt.zero_grad()
+            actr_loss.backward()
+            average_gradients(self.actr, self.device)
+            if self.hps.clip_norm > 0:
+                U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
+            self.actr_opt.step()
+            self.actr_sched.step(iters_so_far)
+
+            if self.hps.use_adaptive_alpha:
+                alpha_loss = (self.w * (-log_prob - self.targ_ent).detach()).mean()
+                self.w_opt.zero_grad()
+                alpha_loss.backward()
+                self.w_opt.step()
+                # Log metrics
+                metrics['alpha'].append(self.alpha)
+                metrics['alpha_loss'].append(alpha_loss)
+
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
         if self.hps.clipped_double:
             twin_q = self.denorm_rets(self.twin.QZ(state, action))
 
         # Compute target QZ estimate
-        next_action = float(self.max_ac) * self.targ_actr.sample(next_state)
+        next_action = float(self.max_ac) * self.targ_actr.sample(next_state, sg=True)
         # Note, here, always stochastic selection of the target action
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
@@ -260,8 +298,7 @@ class SACAgent(object):
 
         # Add the causal entropy regularization term
         next_log_prob = self.targ_actr.logp(next_state, next_action)
-        alpha = self.w.exp() if self.hps.use_adaptive_alpha else self.w
-        q_prime -= alpha.detach() * next_log_prob
+        q_prime -= self.alpha * next_log_prob
 
         # Assemble the target
         targ_q = (reward +
@@ -328,36 +365,6 @@ class SACAgent(object):
             metrics['twin_loss'].append(twin_loss)
         if self.hps.prioritized_replay:
             metrics['iws'].append(iws)
-
-        if update_actor:
-            # Actor loss
-            action_from_actr = self.actr.sample(state)
-            log_prob = self.actr.logp(state, action_from_actr)
-            q_from_actr = self.crit.QZ(state, action_from_actr)
-            if self.hps.clipped_double:
-                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
-                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
-            actr_loss = ((alpha * log_prob) - q_from_actr).mean()
-            # Log metrics
-            metrics['actr_loss'].append(actr_loss)
-
-            self.actr_opt.zero_grad()
-            actr_loss.backward(retain_graph=True)
-            average_gradients(self.actr, self.device)
-            if self.hps.clip_norm > 0:
-                U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
-
-            self.actr_opt.step()
-            self.actr_sched.step(iters_so_far)
-
-            if self.hps.use_adaptive_alpha:
-                self.w_opt.zero_grad()
-                alpha_loss = (alpha * (-log_prob - self.targ_ent).detach()).mean()
-                alpha_loss.backward()
-                self.w_opt.step()
-                # Log metrics
-                metrics['alpha'].append(alpha)
-                metrics['alpha_loss'].append(alpha_loss)
 
         if iters_so_far % self.hps.crit_targ_update_freq == 0:
             self.update_target_net(iters_so_far)

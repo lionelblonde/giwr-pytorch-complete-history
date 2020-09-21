@@ -63,14 +63,14 @@ class BEARAgent(object):
         sync_with_root(self.vae)
 
         # self.hps.use_adaptive_alpha = True  # original hp in BEAR codebase
-        self.hps.use_adaptive_alpha = False  # better hp according to BRAC
+        # self.hps.use_adaptive_alpha = False  # better hp according to BRAC
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
         if self.hps.use_adaptive_alpha:
             # Create learnable Lagrangian multiplier
-            self.w = torch.tensor(1.).to(self.device)
+            self.w = torch.tensor(self.hps.init_temperature).to(self.device)
             self.w.requires_grad = True
         else:
-            self.w = 30.  # hp from BRAC's hp search
+            self.w = self.hps.init_temperature  # hp from BRAC's hp search: 30.
 
         # Set up replay buffer
         shapes = {
@@ -97,10 +97,10 @@ class BEARAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=3.0e-4)
+        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=self.hps.vae_lr)
 
         if self.hps.use_adaptive_alpha:
-            self.w_opt = torch.optim.Adam([self.w], lr=1.0e-3)
+            self.w_opt = torch.optim.Adam([self.w], lr=self.hps.alpha_lr)
 
         # Set up the learning rate schedule
         def _lr(t):  # flake8: using a def instead of a lambda
@@ -124,6 +124,13 @@ class BEARAgent(object):
             log_module_info(logger, 'twin', self.crit)
 
         log_module_info(logger, 'vae', self.vae)
+
+    @property
+    def alpha(self):
+        if self.hps.use_adaptive_alpha:
+            return self.w.exp()
+        else:
+            return self.hps.init_temperature
 
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
@@ -378,11 +385,10 @@ class BEARAgent(object):
             raise NotImplementedError("invalid kernel.")
 
         # Only update the policy after a certian number of iteration
-        alpha = self.w.exp() if self.hps.use_adaptive_alpha else self.w
         if iters_so_far >= 40000:  # original hp in BEAR codebase
-            actr_loss = (-neg_actr_loss + (alpha * (mmd_loss - 0.05))).mean()
+            actr_loss = (-neg_actr_loss + (self.alpha * (mmd_loss - 0.05))).mean()
         else:
-            actr_loss = (alpha * (mmd_loss - 0.05)).mean()
+            actr_loss = (self.alpha * (mmd_loss - 0.05)).mean()
 
         self.actr_opt.zero_grad()
         actr_loss.backward(retain_graph=True)
@@ -396,7 +402,7 @@ class BEARAgent(object):
             self.w_opt.zero_grad()
             (-actr_loss).backward()
             self.w_opt.step()
-            self.w.detach().clamp_(min=-5.0, max=10.0)
+            self.w.data.clamp_(min=-5.0, max=10.0)
 
         # Update target nets
         self.update_target_net(iters_so_far)
@@ -410,6 +416,7 @@ class BEARAgent(object):
         metrics['squashed_action_loss'].append(squashed_action_loss)
         metrics['action_loss'].append(action_loss)
         metrics['actr_loss'].append(actr_loss)
+        metrics['alpha'].append(self.alpha)
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': self.actr_sched.get_last_lr()}

@@ -270,10 +270,13 @@ class ActorVAE(nn.Module):
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> SAM/BEAR-specific models.
 
 def arctanh(x):
-    """Implementation of the arctanh function"""
+    """Implementation of the arctanh function.
+    Can be very numerically unstable, hence the clamping.
+    """
     one_plus_x = (1 + x).clamp(min=1e-6)
     one_minus_x = (1 - x).clamp(min=1e-6)
     return 0.5 * torch.log(one_plus_x / one_minus_x)
+    # return 0.5 * (x.log1p() - (-x).log1p())
 
 
 class NormalToolkit(object):
@@ -289,6 +292,7 @@ class NormalToolkit(object):
     def sample(mean, std):
         # Reparametrization trick
         eps = torch.empty(mean.size()).normal_().to(mean.device)
+        eps.requires_grad = False
         return mean + std * eps
 
     @staticmethod
@@ -343,8 +347,9 @@ class TanhGaussActor(nn.Module):
                 ('nl', nn.Tanh()),
             ]))),
         ]))
-        self.head = nn.Linear(hidden_size, ac_dim)
-        self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
+        self.head = nn.Linear(hidden_size, 2 * ac_dim)
+        # self.head = nn.Linear(hidden_size, ac_dim)
+        # self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=5./3.))
         self.head.apply(init(weight_scale=0.01))
@@ -358,19 +363,28 @@ class TanhGaussActor(nn.Module):
         return TanhNormalToolkit.entropy(out[1])  # std
 
     def act(self, ob):
+        # Special for BEAR
         out = self.forward(ob)
         ac = TanhNormalToolkit.sample(*out[0:2])  # mean, std
         nonsquashed_ac = TanhNormalToolkit.nonsquashed_sample(*out[0:2])  # mean, std
         return ac, nonsquashed_ac
 
-    def sample(self, ob):
-        with torch.no_grad():
+    def sample(self, ob, sg=True):
+        if sg:
+            with torch.no_grad():
+                out = self.forward(ob)
+                ac = TanhNormalToolkit.sample(*out[0:2])  # mean, std
+        else:
             out = self.forward(ob)
             ac = TanhNormalToolkit.sample(*out[0:2])  # mean, std
         return ac
 
-    def mode(self, ob):
-        with torch.no_grad():
+    def mode(self, ob, sg=True):
+        if sg:
+            with torch.no_grad():
+                out = self.forward(ob)
+                ac = TanhNormalToolkit.mode(out[0])  # mean
+        else:
             out = self.forward(ob)
             ac = TanhNormalToolkit.mode(out[0])  # mean
         return ac
@@ -387,7 +401,55 @@ class TanhGaussActor(nn.Module):
     def forward(self, ob):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.fc_stack(ob)
-        ac_mean = self.head(x).clamp(-9.0, 9.0)
-        ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(-5.0, 2.0).exp()
+
+        ac_mean, ac_log_std = self.head(x).chunk(2, dim=-1)
+        ac_mean = ac_mean.clamp(-9.0, 9.0)
+        ac_std = ac_log_std.clamp(-5.0, 2.0).exp()
+
+        # ac_mean = self.head(x).clamp(-9.0, 9.0)
+        # ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(-5.0, 2.0).exp()
+
         # Note, clipping values were taken from the SAC/BEAR codebases
         return ac_mean, ac_std
+
+
+class Critic2(nn.Module):
+
+    def __init__(self, env, hps, hidden_size):
+        super(Critic2, self).__init__()
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
+        self.hps = hps
+        # Define observation whitening
+        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        # Assemble the last layers and output heads
+        self.fc_stack = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim + ac_dim, hidden_size)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_size)),
+                ('nl', nn.ReLU()),
+            ]))),
+            ('fc_block_2', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(hidden_size, hidden_size)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_size)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        self.head = nn.Linear(hidden_size, 1)
+        # Perform initialization
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.head.apply(init(weight_scale=0.01))
+
+    def QZ(self, ob, ac):
+        return self.forward(ob, ac)
+
+    def forward(self, ob, ac):
+        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        x = torch.cat([ob, ac], dim=-1)
+        x = self.fc_stack(x)
+        x = self.head(x)
+        return x
+
+    @property
+    def out_params(self):
+        return [p for p in self.head.parameters()]

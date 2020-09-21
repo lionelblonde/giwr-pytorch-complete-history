@@ -97,9 +97,9 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--dataset_path', type=str, default=None)
 
     # SAC, BCQ, BEAR
+    parser.add_argument('--vae_lr', type=float, default=3e-4)
     boolean_flag(parser, 'use_adaptive_alpha', default=True)
-    parser.add_argument('--alpha_lr', type=float, default=1e-4)
-    boolean_flag(parser, 'stochastic', default=False)
+    parser.add_argument('--alpha_lr', type=float, default=1e-3)
     parser.add_argument('--init_temperature', type=float, default=0.1)
     parser.add_argument('--crit_targ_update_freq', type=int, default=2)
 
