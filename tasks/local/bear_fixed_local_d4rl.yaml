@@ -73,6 +73,7 @@ parameters:
   sub_rate: 20
 
   # SAC, BCQ, BEAR
+  state_dependent_std: false
   vae_lr: 3.0e-4
   use_adaptive_alpha: false
   alpha_lr: 30.

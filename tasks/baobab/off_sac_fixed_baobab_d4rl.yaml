@@ -73,6 +73,7 @@ parameters:
   sub_rate: 20
 
   # SAC, BCQ, BEAR
+  state_dependent_std: false
   use_adaptive_alpha: true
   alpha_lr: 1.0e-4
   init_temperature: 0.1

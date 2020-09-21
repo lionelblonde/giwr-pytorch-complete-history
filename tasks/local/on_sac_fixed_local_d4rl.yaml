@@ -22,7 +22,7 @@ parameters:
   num_timesteps: 1e6
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
-  eval_frequency: 10
+  eval_frequency: 5e3
 
   # Model
   layer_norm: true
@@ -74,6 +74,7 @@ parameters:
   sub_rate: 20
 
   # SAC, BCQ, BEAR
+  state_dependent_std: false
   use_adaptive_alpha: true
   alpha_lr: 1.0e-3
   init_temperature: 1.0e-5

@@ -347,9 +347,11 @@ class TanhGaussActor(nn.Module):
                 ('nl', nn.Tanh()),
             ]))),
         ]))
-        self.head = nn.Linear(hidden_size, 2 * ac_dim)
-        # self.head = nn.Linear(hidden_size, ac_dim)
-        # self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
+        if self.hps.state_dependent_std:
+            self.head = nn.Linear(hidden_size, 2 * ac_dim)
+        else:
+            self.head = nn.Linear(hidden_size, ac_dim)
+            self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=5./3.))
         self.head.apply(init(weight_scale=0.01))
@@ -401,14 +403,13 @@ class TanhGaussActor(nn.Module):
     def forward(self, ob):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.fc_stack(ob)
-
-        ac_mean, ac_log_std = self.head(x).chunk(2, dim=-1)
-        ac_mean = ac_mean.clamp(-9.0, 9.0)
-        ac_std = ac_log_std.clamp(-5.0, 2.0).exp()
-
-        # ac_mean = self.head(x).clamp(-9.0, 9.0)
-        # ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(-5.0, 2.0).exp()
-
+        if self.hps.state_dependent_std:
+            ac_mean, ac_log_std = self.head(x).chunk(2, dim=-1)
+            ac_mean = ac_mean.clamp(-9.0, 9.0)
+            ac_std = ac_log_std.clamp(-5.0, 2.0).exp()
+        else:
+            ac_mean = self.head(x).clamp(-9.0, 9.0)
+            ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(-5.0, 2.0).exp()
         # Note, clipping values were taken from the SAC/BEAR codebases
         return ac_mean, ac_std
 

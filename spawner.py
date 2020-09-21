@@ -47,7 +47,7 @@ BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
              'clipped_double', 'targ_actor_smoothing',
              'use_c51', 'use_qr',
              'offline', 'use_expert_demos',
-             'use_adaptive_alpha']
+             'state_dependent_std', 'use_adaptive_alpha']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
@@ -249,7 +249,7 @@ elif BENCH == 'd4rl':
     ENVS = TOC[args.envset]
 
     if CLUSTER == 'baobab':
-        # Define per-environement partitions map
+        # Define per-environment partitions map
         PEP = {k.split('-v')[0]: PARTITION for k in ENVS}
         # Define per-environment ntasks map
         PEC = {k.split('-v')[0]: NUM_WORKERS for k in ENVS}
@@ -397,6 +397,7 @@ def get_hps(sweep):
             'sub_rate': CONFIG['parameters']['sub_rate'],
 
             # SAC, BCQ, BEAR
+            'state_dependent_std': CONFIG['parameters'].get('state_dependent_std', False),
             'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
             'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
             'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
@@ -476,6 +477,7 @@ def get_hps(sweep):
             'sub_rate': CONFIG['parameters']['sub_rate'],
 
             # SAC, BCQ, BEAR
+            'state_dependent_std': CONFIG['parameters'].get('state_dependent_std', False),
             'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
             'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
             'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
