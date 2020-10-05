@@ -11,7 +11,7 @@ logging:
 parameters:
   # Generic
   task: 'train'
-  algo: 'sac'
+  algo: 'cql'
   cuda: false
   num_seeds: 3
   benchmark: 'd4rl'
@@ -69,7 +69,7 @@ parameters:
   num_tau: 200
 
   # Offline RL
-  offline: false
+  offline: true
   use_expert_demos: false
   sub_rate: 20
 

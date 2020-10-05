@@ -21,9 +21,10 @@ parameters:
   num_timesteps: 1e6
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
-  eval_frequency: 5e3
+  eval_frequency: 10
 
   # Model
+  perception_stack: '"400 300, 400 300"'
   layer_norm: true
 
   # Optimization

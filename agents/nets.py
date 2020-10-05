@@ -26,13 +26,28 @@ def init(weight_scale=1., constant_bias=0.):
                 nn.init.zeros_(m.bias)
 
     return _init
+    
+
+def perception_stack_parser(stack_string):
+    """Parse the perception stack description given in string format.
+    Note, only works with shallow networks of depth of 2 layers.
+    
+    Example of stack string: '300 200, 400 300, 750 750'
+    """
+    out = []
+    for piece in stack_string.split(','):
+        pieces = piece.strip().split(' ')
+        assert len(pieces) == 2, "must be of length 2"
+        pieces = [int(p) for p in pieces]
+        out.append(pieces)  # careful, not extend
+    return out
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Models.
 
 class Actor(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, hidden_dims):
         super(Actor, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -44,17 +59,17 @@ class Actor(nn.Module):
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 300)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(300)),
+                ('fc', nn.Linear(ob_dim, hidden_dims[0])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
                 ('nl', nn.ReLU()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(300, 200)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(200)),
+                ('fc', nn.Linear(hidden_dims[0], hidden_dims[1])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        self.head = nn.Linear(200, ac_dim)
+        self.head = nn.Linear(hidden_dims[1], ac_dim)
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.head.apply(init(weight_scale=0.01))
@@ -79,7 +94,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, hidden_dims):
         super(Critic, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -95,17 +110,17 @@ class Critic(nn.Module):
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, 400)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(400)),
+                ('fc', nn.Linear(ob_dim + ac_dim, hidden_dims[0])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
                 ('nl', nn.ReLU()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(400, 300)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(300)),
+                ('fc', nn.Linear(hidden_dims[0], hidden_dims[1])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        self.head = nn.Linear(300, num_heads)
+        self.head = nn.Linear(hidden_dims[1], num_heads)
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.head.apply(init(weight_scale=0.01))
@@ -132,7 +147,7 @@ class Critic(nn.Module):
 
 class ActorPhi(nn.Module):
 
-    def __init__(self, env, hps, phi=0.05):
+    def __init__(self, env, hps, hidden_dims):
         super(ActorPhi, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -145,17 +160,17 @@ class ActorPhi(nn.Module):
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, 400)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(400)),
+                ('fc', nn.Linear(ob_dim + ac_dim, hidden_dims[0])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
                 ('nl', nn.ReLU()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(400, 300)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(300)),
+                ('fc', nn.Linear(hidden_dims[0], hidden_dims[1])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        self.head = nn.Linear(300, ac_dim)
+        self.head = nn.Linear(hidden_dims[1], ac_dim)
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.head.apply(init(weight_scale=0.01))
@@ -181,7 +196,7 @@ class ActorPhi(nn.Module):
 
 class ActorVAE(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, hidden_dims):
         super(ActorVAE, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -189,36 +204,39 @@ class ActorVAE(nn.Module):
         self.max_ac = max(np.abs(np.amax(env.action_space.high.astype('float32'))),
                           np.abs(np.amin(env.action_space.low.astype('float32'))))
         self.hps = hps
+        # Exceptionally here, we force the hidden dims to be identical
+        assert hidden_dims[0] == hidden_dims[1], "must be identical"
+        hidden_dim = hidden_dims[0]  # arbitrarily chose index 0
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Assemble the last layers and output heads
         self.encoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, 750)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(750)),
+                ('fc', nn.Linear(ob_dim + ac_dim, hidden_dim)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dim)),
                 ('nl', nn.ReLU()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(750, 750)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(750)),
+                ('fc', nn.Linear(hidden_dim, hidden_dim)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dim)),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        self.mean_head = nn.Linear(750, self.latent_dim)
-        self.log_std_head = nn.Linear(750, self.latent_dim)
+        self.mean_head = nn.Linear(hidden_dim, self.latent_dim)
+        self.log_std_head = nn.Linear(hidden_dim, self.latent_dim)
         self.decoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + self.latent_dim, 750)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(750)),
+                ('fc', nn.Linear(ob_dim + self.latent_dim, hidden_dim)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dim)),
                 ('nl', nn.ReLU()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(750, 750)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(750)),
+                ('fc', nn.Linear(hidden_dim, hidden_dim)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dim)),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        self.ac_head = nn.Linear(750, ac_dim)
+        self.ac_head = nn.Linear(hidden_dim, ac_dim)
         # Perform initialization
         self.encoder.apply(init(weight_scale=math.sqrt(2)))
         self.mean_head.apply(init(weight_scale=0.01))
@@ -290,7 +308,7 @@ class NormalToolkit(object):
 
     @staticmethod
     def sample(mean, std):
-        # Reparametrization trick
+        # Re-parametrization trick
         eps = torch.empty(mean.size()).normal_().to(mean.device)
         eps.requires_grad = False
         return mean + std * eps
@@ -327,7 +345,7 @@ class TanhNormalToolkit(object):
 
 class TanhGaussActor(nn.Module):
 
-    def __init__(self, env, hps, hidden_size):
+    def __init__(self, env, hps, hidden_dims):
         super(TanhGaussActor, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -337,20 +355,20 @@ class TanhGaussActor(nn.Module):
         # Define perception stack
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, hidden_size)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_size)),
+                ('fc', nn.Linear(ob_dim, hidden_dims[0])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
                 ('nl', nn.Tanh()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(hidden_size, hidden_size)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_size)),
+                ('fc', nn.Linear(hidden_dims[0], hidden_dims[1])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
         if self.hps.state_dependent_std:
-            self.head = nn.Linear(hidden_size, 2 * ac_dim)
+            self.head = nn.Linear(hidden_dims[1], 2 * ac_dim)
         else:
-            self.head = nn.Linear(hidden_size, ac_dim)
+            self.head = nn.Linear(hidden_dims[1], ac_dim)
             self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=5./3.))
@@ -412,45 +430,3 @@ class TanhGaussActor(nn.Module):
             ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(-5.0, 2.0).exp()
         # Note, clipping values were taken from the SAC/BEAR codebases
         return ac_mean, ac_std
-
-
-class Critic2(nn.Module):
-
-    def __init__(self, env, hps, hidden_size):
-        super(Critic2, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.shape[0]
-        self.hps = hps
-        # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
-        # Assemble the last layers and output heads
-        self.fc_stack = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, hidden_size)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_size)),
-                ('nl', nn.ReLU()),
-            ]))),
-            ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(hidden_size, hidden_size)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_size)),
-                ('nl', nn.ReLU()),
-            ]))),
-        ]))
-        self.head = nn.Linear(hidden_size, 1)
-        # Perform initialization
-        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
-        self.head.apply(init(weight_scale=0.01))
-
-    def QZ(self, ob, ac):
-        return self.forward(ob, ac)
-
-    def forward(self, ob, ac):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
-        x = torch.cat([ob, ac], dim=-1)
-        x = self.fc_stack(x)
-        x = self.head(x)
-        return x
-
-    @property
-    def out_params(self):
-        return [p for p in self.head.parameters()]

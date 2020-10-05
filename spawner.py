@@ -1,6 +1,7 @@
 import argparse
 from copy import deepcopy
 import os
+import sys
 import numpy as np
 import subprocess
 import yaml
@@ -17,6 +18,7 @@ parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
 parser.add_argument('--caliber', type=str, default=None)
 boolean_flag(parser, 'call', default=False, help="launch immediately?")
 boolean_flag(parser, 'sweep', default=False, help="hp search?")
+boolean_flag(parser, 'wandb_upgrade', default=True, help="upgrade wandb?")
 args = parser.parse_args()
 
 # Retrieve config from filesystem
@@ -229,6 +231,9 @@ elif BENCH == 'd4rl':
 
     TOC = {
         'debug': ['halfcheetah-medium-v0'],
+        'eevee': ['walker2d-random-v0',
+                  'walker2d-medium-v0',
+                  'walker2d-expert-v0'],
         'flareon': ['halfcheetah-random-v0',
                     'halfcheetah-medium-v0',
                     'halfcheetah-expert-v0',
@@ -343,6 +348,7 @@ def get_hps(sweep):
             'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
 
             # Model
+            'perception_stack': CONFIG['parameters']['perception_stack'],
             'layer_norm': CONFIG['parameters']['layer_norm'],
 
             # Optimization
@@ -426,6 +432,7 @@ def get_hps(sweep):
             'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
 
             # Model
+            'perception_stack': CONFIG['parameters']['perception_stack'],
             'layer_norm': CONFIG['parameters']['layer_norm'],
 
             # Optimization
@@ -580,6 +587,12 @@ def create_job_str(name, command, envkey):
 
 def run(args):
     """Spawn jobs"""
+
+    if args.wandb_upgrade:
+        # Upgrade the wandb package
+        logger.info(">>>>>>>>>>>>>>>>>>>> Upgrading wandb pip package")
+        out = subprocess.check_output([sys.executable, '-m', 'pip', 'install', 'wandb', '--upgrade'])
+        logger.info(out.decode("utf-8"))
 
     # Create directory for spawned jobs
     root = os.path.dirname(os.path.abspath(__file__))

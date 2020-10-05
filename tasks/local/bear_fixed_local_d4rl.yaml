@@ -22,14 +22,15 @@ parameters:
   num_timesteps: 1e6
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
-  eval_frequency: 5e3
+  eval_frequency: 10
 
   # Model
+  perception_stack: '"256 256, 256 256, 750 750"'
   layer_norm: true
 
   # Optimization
-  actor_lr: 1.0e-3
-  critic_lr: 1.0e-3
+  actor_lr: 1.0e-4
+  critic_lr: 3.0e-4
   with_scheduler: false
   clip_norm: 0.
   wd_scale: 0.
@@ -37,7 +38,7 @@ parameters:
   # Algorithm
   batch_size: 256
   gamma: 0.99
-  mem_size: 1e6
+  mem_size: 2e6
   polyak: 0.005
   targ_up_freq: 100
   n_step_returns: false
@@ -75,5 +76,6 @@ parameters:
   # SAC, BCQ, BEAR
   state_dependent_std: false
   vae_lr: 3.0e-4
-  use_adaptive_alpha: false
-  alpha_lr: 30.
+  use_adaptive_alpha: true
+  alpha_lr: 1.0e-3
+  init_temperature: 0.1

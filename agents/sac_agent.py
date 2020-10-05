@@ -12,7 +12,7 @@ from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers import h5_util as H
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import TanhGaussActor, Critic2
+from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 
 class SACAgent(object):
@@ -44,20 +44,22 @@ class SACAgent(object):
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
         # Create online and target nets, and initialize the target nets
-        self.actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
+        hidden_dims = perception_stack_parser(self.hps.perception_stack)
+        self.actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
+        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
-        self.crit = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
+
+        self.crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
         sync_with_root(self.crit)
-        self.targ_crit = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
+        self.targ_crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
+            self.twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic2(self.env, self.hps, hidden_size=256).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
@@ -279,7 +281,6 @@ class SACAgent(object):
                 alpha_loss.backward()
                 self.w_opt.step()
                 # Log metrics
-                metrics['alpha'].append(self.alpha)
                 metrics['alpha_loss'].append(alpha_loss)
 
         # Compute QZ estimate

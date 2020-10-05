@@ -406,11 +406,6 @@ def learn(args,
             if agent.hps.clipped_double:
                 wandb.log({'twin_loss': np.mean(d['twin_losses'])},
                           step=step)
-
-            if args.algo == 'sam-dac':
-                wandb.log({'disc_loss': np.mean(d['disc_losses'])},
-                          step=step)
-
             wandb.log({'eval_len': np.mean(d['eval_len']),
                        'eval_env_ret': np.mean(d['eval_env_ret']),
                        'avg_eval_env_ret': np.mean(b_eval)},

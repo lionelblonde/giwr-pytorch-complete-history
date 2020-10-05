@@ -10,7 +10,7 @@ from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import TanhGaussActor, ActorVAE, Critic
+from agents.nets import perception_stack_parser, TanhGaussActor, ActorVAE, Critic
 
 
 class BEARAgent(object):
@@ -41,29 +41,31 @@ class BEARAgent(object):
         # Parse the noise types
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
-        # Create online and target nets, and initilize the target nets
-        self.actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
+        # Create online and target nets, and initialize the target nets
+        hidden_dims = perception_stack_parser(self.hps.perception_stack)
+        self.actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_size=256).to(self.device)
+        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
-        self.crit = Critic(self.env, self.hps).to(self.device)
+
+        self.crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
         sync_with_root(self.crit)
-        self.targ_crit = Critic(self.env, self.hps).to(self.device)
+        self.targ_crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps).to(self.device)
+            self.twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic(self.env, self.hps).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         # Create VAE actor, "batch-constrained" by construction
-        self.vae = ActorVAE(self.env, self.hps).to(self.device)
+        self.vae = ActorVAE(self.env, self.hps, hidden_dims=hidden_dims[2]).to(self.device)
         sync_with_root(self.vae)
 
-        # self.hps.use_adaptive_alpha = True  # original hp in BEAR codebase
-        # self.hps.use_adaptive_alpha = False  # better hp according to BRAC
+        # adaptive alpha = True  # original hp in BEAR codebase
+        # adaptive alpha = False  # better hp according to BRAC
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
         if self.hps.use_adaptive_alpha:
             # Create learnable Lagrangian multiplier
@@ -368,14 +370,22 @@ class BEARAgent(object):
         neg_actr_loss = torch.min(neg_actr_loss_1, neg_actr_loss_2)[:, 0]
 
         # Deal with the mmd
-        kernel = 'gaussian'  # original hp in BEAR codebase
-        # Define sigma as indicated in the BEAR codebase (HAXX)
-        if 'hopper' in self.hps.env_id or 'halfcheetah' in self.hps.env_id:
+        # Define sigma and kernel as indicated in the BEAR codebase for D4RL (HAXX)
+        if 'hopper' in self.hps.env_id:
+            kernel = 'laplacian'
             mmd_sigma = 20.
-        elif 'walker' in self.hps.env_id or 'ant' in self.hps.env_id:
+        elif 'halfcheetah' in self.hps.env_id:
+            kernel = 'laplacian'
+            mmd_sigma = 20.
+        elif 'walker' in self.hps.env_id:
+            kernel = 'gaussian'
+            mmd_sigma = 20.
+        elif 'ant' in self.hps.env_id:
+            kernel = 'gaussian'
             mmd_sigma = 50.
         else:
-            mmd_sigma = 50.
+            kernel = 'gaussian'
+            mmd_sigma = 20.
         inputs = dict(input_a=action_from_vae, input_b=action_from_actor, sigma=mmd_sigma)
         if kernel == 'laplacian':
             mmd_loss = self.mmd_loss_laplacian(**inputs)
@@ -391,7 +401,10 @@ class BEARAgent(object):
             actr_loss = (self.alpha * (mmd_loss - 0.05)).mean()
 
         self.actr_opt.zero_grad()
-        actr_loss.backward(retain_graph=True)
+        if self.hps.use_adaptive_alpha:
+            actr_loss.backward(retain_graph=True)
+        else:
+            actr_loss.backward()
         average_gradients(self.actr, self.device)
         if self.hps.clip_norm > 0:
             U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
@@ -402,7 +415,9 @@ class BEARAgent(object):
             self.w_opt.zero_grad()
             (-actr_loss).backward()
             self.w_opt.step()
-            self.w.data.clamp_(min=-5.0, max=10.0)
+            self.w.data.clamp_(min=-5.0, max=10.0)  # HAXX
+
+        logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
 
         # Update target nets
         self.update_target_net(iters_so_far)
@@ -416,7 +431,6 @@ class BEARAgent(object):
         metrics['squashed_action_loss'].append(squashed_action_loss)
         metrics['action_loss'].append(action_loss)
         metrics['actr_loss'].append(actr_loss)
-        metrics['alpha'].append(self.alpha)
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': self.actr_sched.get_last_lr()}

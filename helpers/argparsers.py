@@ -19,7 +19,7 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)
-    parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq', 'bear'], default=None)
+    parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq', 'bear', 'cql'], default=None)
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
@@ -31,6 +31,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--eval_frequency', type=int, default=10)
 
     # Model
+    parser.add_argument('--perception_stack', type=str, default=None)
     boolean_flag(parser, 'layer_norm', default=False)
 
     # Optimization
