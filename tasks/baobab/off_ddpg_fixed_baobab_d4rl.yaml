@@ -18,7 +18,7 @@ parameters:
 
   # Training
   save_frequency: 1e5
-  num_timesteps: 1e6
+  num_timesteps: 5e5
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
   eval_frequency: 10
@@ -29,7 +29,7 @@ parameters:
 
   # Optimization
   actor_lr: 1.0e-4
-  critic_lr: 1.0e-4
+  critic_lr: 1.0e-3
   with_scheduler: false
   clip_norm: 0.
   wd_scale: 0.
@@ -50,6 +50,7 @@ parameters:
 
   # TD3
   clipped_double: true
+  ensemble_q_lambda: 1.
   targ_actor_smoothing: true
   td3_std: 0.2
   td3_c: 0.5

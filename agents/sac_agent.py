@@ -223,9 +223,9 @@ class SACAgent(object):
         ob = torch.Tensor(ob[None]).to(self.device)
         # Predict the action
         if apply_noise:
-            _ac = self.actr.sample(ob)
+            _ac = self.actr.sample(ob, sg=True)
         else:
-            _ac = self.actr.mode(ob)
+            _ac = self.actr.mode(ob, sg=True)
         # Gaussian, so mode == mean, can use either interchangeably
         ac = float(self.max_ac) * _ac
         # Place on cpu and collapse into one dimension
@@ -256,15 +256,15 @@ class SACAgent(object):
             td_len = torch.ones_like(done).to(self.device)
 
         if update_actor:
-            # Actor loss
+
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
             log_prob = self.actr.logp(state, action_from_actr)
             q_from_actr = self.crit.QZ(state, action_from_actr)
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
                 q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+            # Actor loss
             actr_loss = ((self.alpha * log_prob) - q_from_actr).mean()
-            # Log metrics
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
@@ -280,8 +280,9 @@ class SACAgent(object):
                 self.w_opt.zero_grad()
                 alpha_loss.backward()
                 self.w_opt.step()
-                # Log metrics
                 metrics['alpha_loss'].append(alpha_loss)
+
+            logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
@@ -295,7 +296,8 @@ class SACAgent(object):
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
             twin_q_prime = self.targ_twin.QZ(next_state, next_action)
-            q_prime = torch.min(q_prime, twin_q_prime)
+            q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
+                       (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
 
         # Add the causal entropy regularization term
         next_log_prob = self.targ_actr.logp(next_state, next_action)

@@ -18,7 +18,7 @@ parameters:
 
   # Training
   save_frequency: 1e5
-  num_timesteps: 1e6
+  num_timesteps: 5e5
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
   eval_frequency: 10
@@ -29,7 +29,7 @@ parameters:
 
   # Optimization
   actor_lr: 1.0e-4
-  critic_lr: 3.0e-4
+  critic_lr: 1.0e-3
   with_scheduler: false
   clip_norm: 0.
   wd_scale: 0.
@@ -47,6 +47,7 @@ parameters:
 
   # TD3
   clipped_double: true
+  ensemble_q_lambda: 0.75
   targ_actor_smoothing: false
   td3_std: 0.2
   td3_c: 0.5
@@ -72,9 +73,12 @@ parameters:
   use_expert_demos: false
   sub_rate: 20
 
-  # SAC, BCQ, BEAR
-  state_dependent_std: false
+  state_dependent_std: true
   vae_lr: 3.0e-4
-  use_adaptive_alpha: true
+  use_adaptive_alpha: false
   alpha_lr: 1.0e-3
-  init_temperature: 0.1
+  init_temperature: 100.
+  warm_start: 20000
+  bear_mmd_kernel: 'laplacian'
+  bear_mmd_sigma: 20
+  bear_mmd_epsilon: 0.05

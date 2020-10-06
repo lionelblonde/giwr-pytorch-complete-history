@@ -12,7 +12,7 @@ logging:
 parameters:
   # Generic
   task: 'train'
-  algo: 'sac'
+  algo: 'bear'
   cuda: false
   num_seeds: 3
   benchmark: 'd4rl'
@@ -25,21 +25,20 @@ parameters:
   eval_frequency: 10
 
   # Model
-  perception_stack: '"1024 1024, 1024 1024"'
+  perception_stack: '"200 200, 300 300, 750 750"'
   layer_norm: true
 
   # Optimization
-  actor_lr: 1.0e-3
+  actor_lr: 1.0e-4
   critic_lr: 1.0e-3
   with_scheduler: false
   clip_norm: 0.
   wd_scale: 0.
 
   # Algorithm
-  rollout_len: 2
   batch_size: 256
   gamma: 0.99
-  mem_size: 1e6
+  mem_size: 2e6
   polyak: 0.005
   targ_up_freq: 100
   n_step_returns: false
@@ -49,7 +48,7 @@ parameters:
 
   # TD3
   clipped_double: true
-  ensemble_q_lambda: 0.75
+  ensemble_q_lambda: 1.
   targ_actor_smoothing: false
   td3_std: 0.2
   td3_c: 0.5
@@ -65,19 +64,19 @@ parameters:
   # Distributional RL
   use_c51: false
   use_qr: false
-  c51_num_atoms: 151
-  c51_vmin: -150.
-  c51_vmax: 150.
+  c51_num_atoms: 21
+  c51_vmin: -10.
+  c51_vmax: 10.
   num_tau: 200
 
   # Offline RL
-  offline: false
+  offline: true
   use_expert_demos: false
   sub_rate: 20
 
-  # SAC, BCQ, BEAR
   state_dependent_std: false
-  use_adaptive_alpha: true
+  vae_lr: 3.0e-4
+  use_adaptive_alpha: false
   alpha_lr: 1.0e-3
-  init_temperature: 1.0e-5
-  crit_targ_update_freq: 1
+  init_temperature: 0.3
+  warm_start: 20000

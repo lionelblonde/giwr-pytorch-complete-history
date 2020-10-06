@@ -313,12 +313,11 @@ class BEARAgent(object):
             else:
                 raise NotImplementedError("invalid kernel.")
 
+            # Actor loss
             # Only update the policy after a certain number of iteration
-            # (original hp in BEAR codebase: 40000)
             start_using_q = torch.tensor(float(iters_so_far >= self.hps.warm_start)).to(self.device)
             actr_loss = ((_actr_loss * start_using_q.detach()) +
                          (self.alpha * (mmd_loss - self.hps.bear_mmd_epsilon))).mean()
-            # original hp in BEAR codebase for epsilon: 0.05
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
@@ -429,36 +428,6 @@ class BEARAgent(object):
         lrnows = {'actr': self.actr_sched.get_last_lr()}
 
         return metrics, lrnows
-
-    def mmd_loss_laplacian(self, input_a, input_b, sigma):
-        """Assemble the MMD constraint with Laplacian kernel for support matching"""
-        # sigma is set to 20.0 for hopper, cheetah and 50 for walker/ant
-        diff_x_x = input_a.unsqueeze(2) - input_a.unsqueeze(1)  # B x N x N x d
-        diff_x_x = torch.mean((-(diff_x_x.abs()).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
-
-        diff_x_y = input_a.unsqueeze(2) - input_b.unsqueeze(1)
-        diff_x_y = torch.mean((-(diff_x_y.abs()).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
-
-        diff_y_y = input_b.unsqueeze(2) - input_b.unsqueeze(1)  # B x N x N x d
-        diff_y_y = torch.mean((-(diff_y_y.abs()).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
-
-        overall_loss = (diff_x_x + diff_y_y - 2.0 * diff_x_y + 1e-6).sqrt()
-        return overall_loss
-
-    def mmd_loss_gaussian(self, input_a, input_b, sigma):
-        """Assemble the MMD constraint with Gaussian Kernel support matching"""
-        # sigma is set to 20.0 for hopper, cheetah and 50 for walker/ant
-        diff_x_x = input_a.unsqueeze(2) - input_a.unsqueeze(1)  # B x N x N x d
-        diff_x_x = torch.mean((-(diff_x_x.pow(2)).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
-
-        diff_x_y = input_a.unsqueeze(2) - input_b.unsqueeze(1)
-        diff_x_y = torch.mean((-(diff_x_y.pow(2)).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
-
-        diff_y_y = input_b.unsqueeze(2) - input_b.unsqueeze(1)  # B x N x N x d
-        diff_y_y = torch.mean((-(diff_y_y.pow(2)).sum(-1) / (2.0 * sigma)).exp(), dim=(1, 2))
-
-        overall_loss = (diff_x_x + diff_y_y - 2.0 * diff_x_y + 1e-6).sqrt()
-        return overall_loss
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

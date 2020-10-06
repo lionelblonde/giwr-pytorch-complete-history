@@ -23,9 +23,9 @@ def argparser(description="Offline RL Experiment"):
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
-                        type=int, default=1000)
+                        type=int, default=1e5)
     parser.add_argument('--num_timesteps', help='total number of interactions',
-                        type=int, default=int(1e7))
+                        type=int, default=int(5e5))
     parser.add_argument('--training_steps_per_iter', type=int, default=4)
     parser.add_argument('--eval_steps_per_iter', type=int, default=10)
     parser.add_argument('--eval_frequency', type=int, default=10)
@@ -36,7 +36,7 @@ def argparser(description="Offline RL Experiment"):
 
     # Optimization
     parser.add_argument('--actor_lr', type=float, default=1e-4)
-    parser.add_argument('--critic_lr', type=float, default=1e-4)
+    parser.add_argument('--critic_lr', type=float, default=1e-3)
     boolean_flag(parser, 'with_scheduler', default=False)
     parser.add_argument('--clip_norm', type=float, default=1.)
     parser.add_argument('--wd_scale', help='weight decay scale', type=float, default=0.001)
@@ -58,6 +58,8 @@ def argparser(description="Offline RL Experiment"):
 
     # TD3
     boolean_flag(parser, 'clipped_double', default=False)
+    parser.add_argument('--ensemble_q_lambda', type=float, default=1.0,
+                        help='min-max Q ensemble estimate interpolation coefficient')
     boolean_flag(parser, 'targ_actor_smoothing', default=False)
     parser.add_argument('--td3_std', type=float, default=0.2,
                         help='std of smoothing noise applied to the target action')
@@ -97,12 +99,16 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--expert_path', help='demos location', type=str, default=None)
     parser.add_argument('--dataset_path', type=str, default=None)
 
-    # SAC, BCQ, BEAR
     boolean_flag(parser, 'state_dependent_std', default=False)
+    parser.add_argument('--bcq_phi', type=float, default=0.05)
     parser.add_argument('--vae_lr', type=float, default=3e-4)
     boolean_flag(parser, 'use_adaptive_alpha', default=True)
     parser.add_argument('--alpha_lr', type=float, default=1e-3)
     parser.add_argument('--init_temperature', type=float, default=0.1)
     parser.add_argument('--crit_targ_update_freq', type=int, default=2)
+    parser.add_argument('--warm_start', type=int, default=20000)
+    parser.add_argument('--bear_mmd_kernel', type=str, choices=['laplacian', 'gaussian'], default='laplacian')
+    parser.add_argument('--bear_mmd_sigma', type=float, default=20.)
+    parser.add_argument('--bear_mmd_epsilon', type=float, default=0.05)
 
     return parser

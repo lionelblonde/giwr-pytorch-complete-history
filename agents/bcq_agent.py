@@ -263,8 +263,8 @@ class BCQAgent(object):
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
             twin_q_prime = self.targ_twin.QZ(next_state, next_action)
-            q_prime = (0.75 * torch.min(q_prime, twin_q_prime) +
-                       0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCQ
+            q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
+                       (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
         # Take max over each action sampled from the VAE
         q_prime = q_prime.reshape(self.hps.batch_size, -1).max(1)[0].reshape(-1, 1)
         # Assemble the target

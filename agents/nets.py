@@ -26,12 +26,12 @@ def init(weight_scale=1., constant_bias=0.):
                 nn.init.zeros_(m.bias)
 
     return _init
-    
+
 
 def perception_stack_parser(stack_string):
     """Parse the perception stack description given in string format.
     Note, only works with shallow networks of depth of 2 layers.
-    
+
     Example of stack string: '300 200, 400 300, 750 750'
     """
     out = []
@@ -154,7 +154,6 @@ class ActorPhi(nn.Module):
         self.max_ac = max(np.abs(np.amax(env.action_space.high.astype('float32'))),
                           np.abs(np.amin(env.action_space.low.astype('float32'))))
         self.hps = hps
-        self.phi = phi
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Assemble the last layers and output heads
@@ -182,7 +181,7 @@ class ActorPhi(nn.Module):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
-        a = self.phi * float(self.max_ac) * torch.tanh(self.head(x))
+        a = self.hps.bcq_phi * float(self.max_ac) * torch.tanh(self.head(x))
         return ac + a
 
     @property
@@ -384,6 +383,7 @@ class TanhGaussActor(nn.Module):
 
     def act(self, ob):
         # Special for BEAR
+        # Note: it lets gradients flow through
         out = self.forward(ob)
         ac = TanhNormalToolkit.sample(*out[0:2])  # mean, std
         nonsquashed_ac = TanhNormalToolkit.nonsquashed_sample(*out[0:2])  # mean, std

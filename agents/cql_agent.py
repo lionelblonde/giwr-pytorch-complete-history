@@ -282,7 +282,8 @@ class CQLAgent(object):
             q_from_actr = self.crit.QZ(state, action_from_actr)
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
-                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+                q_from_actr = (self.hps.ensemble_q_lambda * torch.min(q_from_actr, twin_q_from_actr) +
+                               (1. - self.hps.ensemble_q_lambda) * torch.max(q_from_actr, twin_q_from_actr))
             actr_loss = ((self.alpha * log_prob) - q_from_actr).mean()
             # Log metrics
             metrics['actr_loss'].append(actr_loss)
@@ -315,7 +316,8 @@ class CQLAgent(object):
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
             twin_q_prime = self.targ_twin.QZ(next_state, next_action)
-            q_prime = torch.min(q_prime, twin_q_prime)
+            q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
+                       (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
 
         # Add the causal entropy regularization term
         next_log_prob = self.targ_actr.logp(next_state, next_action)

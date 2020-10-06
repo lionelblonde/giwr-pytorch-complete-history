@@ -341,8 +341,8 @@ def get_hps(sweep):
             'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 400))),
-            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
+            'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 1e5))),
+            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 5e5))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
@@ -353,7 +353,7 @@ def get_hps(sweep):
 
             # Optimization
             'actor_lr': float(np.random.choice([1e-4, 3e-4])),
-            'critic_lr': float(np.random.choice([1e-4, 3e-4])),
+            'critic_lr': float(np.random.choice([3e-4, 1e-3])),
             'with_scheduler': CONFIG['parameters']['with_scheduler'],
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(np.random.choice([1e-4, 3e-4, 1e-3])),
@@ -377,6 +377,7 @@ def get_hps(sweep):
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),
+            'ensemble_q_lambda': CONFIG['parameters'].get('ensemble_q_lambda', 1.0),
             'targ_actor_smoothing': CONFIG['parameters'].get('targ_actor_smoothing', False),
             'td3_std': CONFIG['parameters'].get('td3_std', 0.2),
             'td3_c': CONFIG['parameters'].get('td3_c', 0.5),
@@ -402,13 +403,17 @@ def get_hps(sweep):
             'use_expert_demos': CONFIG['parameters']['use_expert_demos'],
             'sub_rate': CONFIG['parameters']['sub_rate'],
 
-            # SAC, BCQ, BEAR
             'state_dependent_std': CONFIG['parameters'].get('state_dependent_std', False),
+            'bcq_phi': CONFIG['parameters'].get('bcq_phi', 0.05),
             'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
             'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
             'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
             'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
             'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
+            'warm_start': CONFIG['parameters'].get('warm_start', 20000),
+            'bear_mmd_kernel': CONFIG['parameters'].get('bear_mmd_kernel', 'laplacian'),
+            'bear_mmd_sigma': CONFIG['parameters'].get('bear_mmd_sigma', 20.),
+            'bear_mmd_epsilon': CONFIG['parameters'].get('bear_mmd_epsilon', 0.05),
         }
     else:
         # No search, fixed map
@@ -425,8 +430,8 @@ def get_hps(sweep):
             'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 400))),
-            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
+            'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 1e5))),
+            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 5e5))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
@@ -437,7 +442,7 @@ def get_hps(sweep):
 
             # Optimization
             'actor_lr': float(CONFIG['parameters'].get('actor_lr', 1e-4)),
-            'critic_lr': float(CONFIG['parameters'].get('critic_lr', 1e-4)),
+            'critic_lr': float(CONFIG['parameters'].get('critic_lr', 1e-3)),
             'with_scheduler': CONFIG['parameters']['with_scheduler'],
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(CONFIG['parameters'].get('wd_scale', 3e-4)),
@@ -458,6 +463,7 @@ def get_hps(sweep):
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),
+            'ensemble_q_lambda': CONFIG['parameters'].get('ensemble_q_lambda', 1.0),
             'targ_actor_smoothing': CONFIG['parameters'].get('targ_actor_smoothing', False),
             'td3_std': CONFIG['parameters'].get('td3_std', 0.2),
             'td3_c': CONFIG['parameters'].get('td3_c', 0.5),
@@ -483,13 +489,17 @@ def get_hps(sweep):
             'use_expert_demos': CONFIG['parameters']['use_expert_demos'],
             'sub_rate': CONFIG['parameters']['sub_rate'],
 
-            # SAC, BCQ, BEAR
             'state_dependent_std': CONFIG['parameters'].get('state_dependent_std', False),
+            'bcq_phi': CONFIG['parameters'].get('bcq_phi', 0.05),
             'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
             'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
             'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
             'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
             'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
+            'warm_start': CONFIG['parameters'].get('warm_start', 20000),
+            'bear_mmd_kernel': CONFIG['parameters'].get('bear_mmd_kernel', 'laplacian'),
+            'bear_mmd_sigma': CONFIG['parameters'].get('bear_mmd_sigma', 20.),
+            'bear_mmd_epsilon': CONFIG['parameters'].get('bear_mmd_epsilon', 0.05),
         }
 
     # Duplicate for each environment

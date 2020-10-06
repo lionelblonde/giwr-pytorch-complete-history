@@ -441,8 +441,8 @@ class DDPGAgent(object):
             if self.hps.clipped_double:
                 # Define QZ' as the minimum QZ value between TD3's twin QZ's
                 twin_q_prime = self.targ_twin.QZ(next_state, next_action)
-                q_prime = (0.75 * torch.min(q_prime, twin_q_prime) +
-                           0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCQ
+                q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
+                           (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
             targ_q = (reward +
                       (self.hps.gamma ** td_len) * (1. - done) *
                       self.denorm_rets(q_prime))
