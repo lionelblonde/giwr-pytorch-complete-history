@@ -189,7 +189,7 @@ class SACAgent(object):
             self.targ_twin.rms_obs.update(_state)
 
     # def patcher(self):
-    #     raise NotImplementedError  # XXX no need
+    #     raise NotImplementedError  # no need
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -203,13 +203,13 @@ class SACAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                # _patcher,  # XXX no need
+                # _patcher,  # no need
                 None,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                # _patcher,  # XXX no need
+                # _patcher,  # no need
                 None,
             )
         return batch

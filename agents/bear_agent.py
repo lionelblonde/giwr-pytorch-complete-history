@@ -193,7 +193,7 @@ class BEARAgent(object):
             self.targ_twin.rms_obs.update(_state)
 
     # def patcher(self):
-    #     raise NotImplementedError  # XXX no need
+    #     raise NotImplementedError  # no need
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -207,13 +207,13 @@ class BEARAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                # _patcher,  # XXX no need
+                # _patcher,  # no need
                 None,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                # _patcher,  # XXX no need
+                # _patcher,  # no need
                 None,
             )
         return batch
@@ -224,9 +224,13 @@ class BEARAgent(object):
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
         """
         # Create tensor from the state (`require_grad=False` by default)
-        ob = torch.Tensor(ob[None]).to(self.device)
+        ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
         # Predict the action
         ac = float(self.max_ac) * self.actr.sample(ob)
+        # Among the 100 values, take the one with the highest Q value (or Z value)
+        q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
+        index = q_value.argmax(0)
+        ac = ac[index]
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action
@@ -254,7 +258,7 @@ class BEARAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
-        # VAE training
+        # Train a behavioral cloning VAE policy
         recon, mean, std = self.vae(state, action)
         recon_loss = F.mse_loss(recon, action)
         kl_loss = -0.5 * (1 + std.pow(2).log() - mean.pow(2) - std.pow(2)).mean()

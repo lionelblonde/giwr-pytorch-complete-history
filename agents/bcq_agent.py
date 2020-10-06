@@ -47,7 +47,7 @@ class BCQAgent(object):
         sync_with_root(self.actr)
         self.targ_actr = ActorPhi(self.env, self.hps, hidden_dims=hidden_dims[0], phi=0.05).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
-        
+
         self.crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
         sync_with_root(self.crit)
         self.targ_crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
@@ -173,7 +173,7 @@ class BCQAgent(object):
             self.targ_twin.rms_obs.update(_state)
 
     def patcher(self):
-        raise NotImplementedError  # TODO
+        raise NotImplementedError  # no need
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -187,13 +187,13 @@ class BCQAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                # _patcher,  # TODO
+                # _patcher,  # no need
                 None,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                # _patcher,  # TODO
+                # _patcher,   # no need
                 None,
             )
         return batch
@@ -239,7 +239,7 @@ class BCQAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
-        # VAE training
+        # Train a behavioral cloning VAE policy
         recon, mean, std = self.vae(state, action)
         recon_loss = F.mse_loss(recon, action)
         kl_loss = -0.5 * (1 + std.pow(2).log() - mean.pow(2) - std.pow(2)).mean()

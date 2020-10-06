@@ -33,6 +33,7 @@ class CQLAgent(object):
         assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
+        assert not self.hps.use_c51 and not self.hps.use_qr
 
         # Define action clipping range
         self.max_ac = max(np.abs(np.amax(self.ac_space.high.astype('float32'))),
@@ -186,7 +187,7 @@ class CQLAgent(object):
             self.targ_twin.rms_obs.update(_state)
 
     # def patcher(self):
-    #     raise NotImplementedError  # XXX no need
+    #     raise NotImplementedError  # no need
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -200,13 +201,13 @@ class CQLAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                # _patcher,  # XXX no need
+                # _patcher,  # no need
                 None,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                # _patcher,  # XXX no need
+                # _patcher,  # no need
                 None,
             )
         return batch

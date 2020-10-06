@@ -78,7 +78,7 @@ class DDPGAgent(object):
         sync_with_root(self.actr)
         self.targ_actr = Actor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
-        
+
         self.crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
         sync_with_root(self.crit)
         self.targ_crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
@@ -243,7 +243,7 @@ class DDPGAgent(object):
             self.apnp_actr.rms_obs.update(_state)
 
     def patcher(self):
-        raise NotImplementedError  # TODO
+        raise NotImplementedError  # no need
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -257,13 +257,13 @@ class DDPGAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                # _patcher,  # TODO
+                # _patcher,  # no need
                 None,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                # _patcher,  # TODO
+                # _patcher,  # no need
                 None,
             )
         return batch
@@ -558,7 +558,7 @@ class DDPGAgent(object):
         # Perturb separate copy of the policy to adjust the scale for the next 'real' perturbation
         batch = self.replay_buffer.sample(
             self.hps.batch_size,
-            # _patcher,  # TODO
+            # _patcher,  # no need
             None,
         )
         state = torch.Tensor(batch['obs0']).to(self.device)
