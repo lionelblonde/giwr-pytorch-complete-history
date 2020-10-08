@@ -19,8 +19,8 @@ parameters:
 
   # Training
   save_frequency: 1e5
-  num_timesteps: 5e5
-  training_steps_per_iter: 2
+  num_steps: 5e5
+  training_steps_per_iter: 1
   eval_steps_per_iter: 10
   eval_frequency: 10
 
@@ -31,7 +31,7 @@ parameters:
   # Optimization
   actor_lr: 1.0e-4
   critic_lr: 1.0e-3
-  with_scheduler: false
+  lr_schedule: 'linear'
   clip_norm: 0.
   wd_scale: 0.
 

@@ -164,7 +164,7 @@ def train(args):
             )
 
         assert args.offline
-        
+
     elif args.algo == 'cql':
         def agent_wrapper():
             return CQLAgent(
@@ -180,16 +180,19 @@ def train(args):
         raise NotImplementedError("algorithm not covered")
 
     # Create an evaluation environment not to mess up with training rollouts
-    eval_env = None
+    main_eval_env = None
+    maxq_eval_env = None
     if rank == 0:
-        eval_env = make_env(args.env_id, eval_seed)
+        main_eval_env = make_env(args.env_id, eval_seed)
+        maxq_eval_env = make_env(args.env_id, eval_seed)
 
     # Train
     orchestrator.learn(
         args=args,
         rank=rank,
         env=env,
-        eval_env=eval_env,
+        main_eval_env=main_eval_env,
+        maxq_eval_env=maxq_eval_env,
         agent_wrapper=agent_wrapper,
         experiment_name=experiment_name,
         use_noise_process=(args.algo == 'ddpg' and not args.offline),
@@ -199,9 +202,9 @@ def train(args):
     env.close()
 
     # Close the eval env
-    if eval_env is not None:
-        assert rank == 0
-        eval_env.close()
+    if rank == 0:
+        main_eval_env.close()
+        maxq_eval_env.close()
 
 
 def evaluate(args):

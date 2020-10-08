@@ -24,7 +24,7 @@ def argparser(description="Offline RL Experiment"):
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
                         type=int, default=1e5)
-    parser.add_argument('--num_timesteps', help='total number of interactions',
+    parser.add_argument('--num_steps', help='total number of interactions (online), or iterations (offline)',
                         type=int, default=int(5e5))
     parser.add_argument('--training_steps_per_iter', type=int, default=4)
     parser.add_argument('--eval_steps_per_iter', type=int, default=10)
@@ -37,7 +37,7 @@ def argparser(description="Offline RL Experiment"):
     # Optimization
     parser.add_argument('--actor_lr', type=float, default=1e-4)
     parser.add_argument('--critic_lr', type=float, default=1e-3)
-    boolean_flag(parser, 'with_scheduler', default=False)
+    parser.add_argument('--lr_schedule', type=str, choices=['constant', 'linear'], default='constant')
     parser.add_argument('--clip_norm', type=float, default=1.)
     parser.add_argument('--wd_scale', help='weight decay scale', type=float, default=0.001)
 

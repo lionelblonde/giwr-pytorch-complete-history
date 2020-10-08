@@ -42,7 +42,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
+BOOL_ARGS = ['cuda', 'render', 'record',
              'layer_norm',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'ret_norm', 'popart',
@@ -342,7 +342,7 @@ def get_hps(sweep):
 
             # Training
             'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 1e5))),
-            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 5e5))),
+            'num_steps': int(float(CONFIG['parameters'].get('num_steps', 5e5))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
@@ -354,7 +354,7 @@ def get_hps(sweep):
             # Optimization
             'actor_lr': float(np.random.choice([1e-4, 3e-4])),
             'critic_lr': float(np.random.choice([3e-4, 1e-3])),
-            'with_scheduler': CONFIG['parameters']['with_scheduler'],
+            'lr_schedule': np.random.choice(['constant', 'linear']),
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(np.random.choice([1e-4, 3e-4, 1e-3])),
 
@@ -431,7 +431,7 @@ def get_hps(sweep):
 
             # Training
             'save_frequency': int(float(CONFIG['parameters'].get('save_frequency', 1e5))),
-            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 5e5))),
+            'num_steps': int(float(CONFIG['parameters'].get('num_steps', 5e5))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': int(float(CONFIG['parameters'].get('eval_frequency', 10))),
@@ -443,7 +443,7 @@ def get_hps(sweep):
             # Optimization
             'actor_lr': float(CONFIG['parameters'].get('actor_lr', 1e-4)),
             'critic_lr': float(CONFIG['parameters'].get('critic_lr', 1e-3)),
-            'with_scheduler': CONFIG['parameters']['with_scheduler'],
+            'lr_schedule': CONFIG['parameters']['lr_schedule'],
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(CONFIG['parameters'].get('wd_scale', 3e-4)),
 

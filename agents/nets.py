@@ -8,6 +8,13 @@ import torch.nn.functional as F
 from helpers.distributed_util import RunMoms
 
 
+STANDARDIZED_OB_CLAMPS = [-5., 5.]
+BCQ_Z_CLAMPS = [-0.5, 0.5]
+BCQ_LOG_STD_CLAMPS = [-4., 15.]
+SAC_MEAN_CLAMPS = [-9., 9.]
+SAC_LOG_STD_CLAMPS = [-5., 2.]
+
+
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
 
 def init(weight_scale=1., constant_bias=0.):
@@ -78,7 +85,7 @@ class Actor(nn.Module):
         return self.forward(ob)
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(ob)
         ac = float(self.max_ac) * torch.tanh(self.head(x))
         return ac
@@ -129,7 +136,7 @@ class Critic(nn.Module):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
         x = self.head(x)
@@ -178,19 +185,11 @@ class ActorPhi(nn.Module):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
         a = self.hps.bcq_phi * float(self.max_ac) * torch.tanh(self.head(x))
         return ac + a
-
-    @property
-    def perturbable_params(self):
-        return [n for n, _ in self.named_parameters() if 'ln' not in n]
-
-    @property
-    def non_perturbable_params(self):
-        return [n for n, _ in self.named_parameters() if 'ln' in n]
 
 
 class ActorVAE(nn.Module):
@@ -243,13 +242,18 @@ class ActorVAE(nn.Module):
         self.decoder.apply(init(weight_scale=math.sqrt(2)))
         self.ac_head.apply(init(weight_scale=0.01))
 
+        # Create generator object which manages the random state of the actor
+        # All the sampling is done by giving the generator as input
+        self.gen = torch.Generator().manual_seed(self.hps.seed)
+
     def decode(self, ob, z=None):
         """Used in BCQ"""
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         if z is None:
             # When z is not provided as input (or is literally None), sample it (and clip it)
             # z effectively sampled from a truncated (0, 1) isotropic normal distribution
             size = (ob.size(0), self.latent_dim)
-            z = torch.randn(*size).to(ob).clamp(-0.5, 0.5)
+            z = torch.randn(*size, generator=self.gen).to(ob).clamp(*BCQ_Z_CLAMPS)
         # Pass through the decoder and output head
         x = torch.cat([ob, z], dim=-1)
         x = self.decoder(x)
@@ -259,11 +263,12 @@ class ActorVAE(nn.Module):
 
     def decodex(self, ob, z=None, expansion=4):
         """Used in BEAR"""
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         if z is None:
             # When z is not provided as input (or is literally None), sample it (and clip it)
             # z effectively sampled from a truncated (0, 1) isotropic normal distribution
             size = (ob.size(0), expansion, self.latent_dim)
-            z = torch.randn(*size).to(ob).clamp(-0.5, 0.5)
+            z = torch.randn(*size, generator=self.gen).to(ob).clamp(*BCQ_Z_CLAMPS)
         # Pass through the decoder and output head
         ob = ob.unsqueeze(0).repeat(expansion, 1, 1).permute(1, 0, 2)
         x = torch.cat([ob, z], dim=-1)
@@ -272,19 +277,21 @@ class ActorVAE(nn.Module):
         return torch.tanh(ac), ac
 
     def forward(self, ob, ac):
+        unnormalized_ob = ob.clone()
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         # Encode
         x = self.encoder(x)
         mean = self.mean_head(x)
-        log_std = self.log_std_head(x).clamp(-4, 15)  # clipped for numerical stability (BCQ)
+        log_std = self.log_std_head(x).clamp(*BCQ_LOG_STD_CLAMPS)  # clipped for numerical stability (BCQ)
         std = log_std.exp()
-        z = mean + (std * torch.randn_like(std))
+        z = mean + (std * torch.randn(*std.shape, generator=self.gen))
         # Decode
-        ac = self.decode(ob, z)
+        ac = self.decode(unnormalized_ob, z)  # the ob will be normalized in `decode`
         return ac, mean, std
 
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> SAM/BEAR-specific models.
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> SAC/BEAR-specific models.
 
 def arctanh(x):
     """Implementation of the arctanh function.
@@ -306,9 +313,9 @@ class NormalToolkit(object):
         return -neglogp
 
     @staticmethod
-    def sample(mean, std):
+    def sample(mean, std, generator):
         # Re-parametrization trick
-        eps = torch.empty(mean.size()).normal_().to(mean.device)
+        eps = torch.empty(mean.size()).normal_(generator=generator).to(mean.device)
         eps.requires_grad = False
         return mean + std * eps
 
@@ -328,13 +335,13 @@ class TanhNormalToolkit(object):
         return logp.sum(-1, keepdim=True)
 
     @staticmethod
-    def nonsquashed_sample(mean, std):
-        sample = NormalToolkit.sample(mean, std)
+    def nonsquashed_sample(mean, std, generator):
+        sample = NormalToolkit.sample(mean, std, generator)
         return sample
 
     @staticmethod
-    def sample(mean, std):
-        sample = NormalToolkit.sample(mean, std)
+    def sample(mean, std, generator):
+        sample = NormalToolkit.sample(mean, std, generator)
         return torch.tanh(sample)
 
     @staticmethod
@@ -370,8 +377,12 @@ class TanhGaussActor(nn.Module):
             self.head = nn.Linear(hidden_dims[1], ac_dim)
             self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
         # Perform initialization
-        self.fc_stack.apply(init(weight_scale=5./3.))
+        self.fc_stack.apply(init(weight_scale=5. / 3.))
         self.head.apply(init(weight_scale=0.01))
+
+        # Create generator object which manages the random state of the actor
+        # All the sampling is done by giving the generator as input
+        self.gen = torch.Generator().manual_seed(self.hps.seed)
 
     def logp(self, ob, ac):
         out = self.forward(ob)
@@ -385,18 +396,18 @@ class TanhGaussActor(nn.Module):
         # Special for BEAR
         # Note: it lets gradients flow through
         out = self.forward(ob)
-        ac = TanhNormalToolkit.sample(*out[0:2])  # mean, std
-        nonsquashed_ac = TanhNormalToolkit.nonsquashed_sample(*out[0:2])  # mean, std
+        ac = TanhNormalToolkit.sample(*out[0:2], generator=self.gen)  # mean, std
+        nonsquashed_ac = TanhNormalToolkit.nonsquashed_sample(*out[0:2], generator=self.gen)  # mean, std
         return ac, nonsquashed_ac
 
     def sample(self, ob, sg=True):
         if sg:
             with torch.no_grad():
                 out = self.forward(ob)
-                ac = TanhNormalToolkit.sample(*out[0:2])  # mean, std
+                ac = TanhNormalToolkit.sample(*out[0:2], generator=self.gen)  # mean, std
         else:
             out = self.forward(ob)
-            ac = TanhNormalToolkit.sample(*out[0:2])  # mean, std
+            ac = TanhNormalToolkit.sample(*out[0:2], generator=self.gen)  # mean, std
         return ac
 
     def mode(self, ob, sg=True):
@@ -419,14 +430,14 @@ class TanhGaussActor(nn.Module):
         return kl
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(ob)
         if self.hps.state_dependent_std:
             ac_mean, ac_log_std = self.head(x).chunk(2, dim=-1)
-            ac_mean = ac_mean.clamp(-9.0, 9.0)
-            ac_std = ac_log_std.clamp(-5.0, 2.0).exp()
+            ac_mean = ac_mean.clamp(*SAC_MEAN_CLAMPS)
+            ac_std = ac_log_std.clamp(*SAC_LOG_STD_CLAMPS).exp()
         else:
-            ac_mean = self.head(x).clamp(-9.0, 9.0)
-            ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(-5.0, 2.0).exp()
+            ac_mean = self.head(x).clamp(*SAC_MEAN_CLAMPS)
+            ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(*SAC_LOG_STD_CLAMPS).exp()
         # Note, clipping values were taken from the SAC/BEAR codebases
         return ac_mean, ac_std

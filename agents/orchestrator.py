@@ -14,6 +14,9 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video
 
 
+MAXLEN = 40
+
+
 def rollout_generator(env, agent, rollout_len, use_noise_process):
 
     t = 0
@@ -26,7 +29,7 @@ def rollout_generator(env, agent, rollout_len, use_noise_process):
     while True:
 
         # Predict action
-        ac = agent.predict(ob, apply_noise=True)
+        ac = agent.predict(ob, apply_noise=True, max_q=None)
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
@@ -60,7 +63,7 @@ def rollout_generator(env, agent, rollout_len, use_noise_process):
         t += 1
 
 
-def ep_generator(env, agent, render, record):
+def ep_generator(env, agent, render, record, max_q):
     """Generator that spits out a trajectory collected during a single episode
     `append` operation is also significantly faster on lists than numpy arrays,
     they will be converted to numpy arrays once complete and ready to be yielded.
@@ -87,7 +90,7 @@ def ep_generator(env, agent, render, record):
     while True:
 
         # Predict action
-        ac = agent.predict(ob, apply_noise=False)
+        ac = agent.predict(ob, apply_noise=False, max_q=max_q)
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
@@ -216,7 +219,8 @@ def generate_buffer(args,
 def learn(args,
           rank,
           env,
-          eval_env,
+          main_eval_env,
+          maxq_eval_env,
           agent_wrapper,
           experiment_name,
           use_noise_process=None):
@@ -228,14 +232,15 @@ def learn(args,
     timed = timed_cm_wrapper(logger)
 
     # Start clocks
-    num_iters = int(args.num_timesteps) // args.rollout_len
+    num_iters = int(args.num_steps) // args.rollout_len
     iters_so_far = 0
     timesteps_so_far = 0
     tstart = time.time()
 
     # Create collections
     d = defaultdict(list)
-    b_eval = deque(maxlen=10)
+    main_eval_deque = deque(maxlen=MAXLEN)
+    maxq_eval_deque = deque(maxlen=MAXLEN)
 
     if rank == 0:
         # Set up model save directory
@@ -288,10 +293,10 @@ def learn(args,
         pass
     else:
         roll_gen = rollout_generator(env, agent, args.rollout_len, use_noise_process)
-    if eval_env is not None:
-        assert rank == 0, "non-zero rank mpi worker forbidden here"
+    if rank == 0:
         # Create episode generator for evaluating the agent
-        eval_ep_gen = ep_generator(eval_env, agent, args.render, args.record)
+        main_eval_ep_gen = ep_generator(main_eval_env, agent, args.render, args.record, max_q=False)
+        maxq_eval_ep_gen = ep_generator(maxq_eval_env, agent, args.render, args.record, max_q=True)
 
     while iters_so_far <= num_iters:
 
@@ -351,42 +356,51 @@ def learn(args,
                     if agent.hps.prioritized_replay:
                         iws = metrics['iws']  # last one only
 
-        if eval_env is not None:
-            assert rank == 0, "non-zero rank mpi worker forbidden here"
+        if rank == 0 and iters_so_far % args.eval_frequency == 0:
 
-            if iters_so_far % args.eval_frequency == 0:
+            with timed("evaluating"):
 
-                with timed("evaluating"):
-                    for eval_step in range(args.eval_steps_per_iter):
-                        # Sample an episode w/ non-perturbed actor w/o storing anything
-                        eval_ep = eval_ep_gen.__next__()
-                        # Aggregate data collected during the evaluation to the buffers
-                        d['eval_len'].append(eval_ep['ep_len'])
-                        d['eval_env_ret'].append(eval_ep['ep_env_ret'])
+                # Update the parameters of the eval actors with the ones of the trained one
+                agent.update_eval_nets()
 
-                    b_eval.append(np.mean(d['eval_env_ret']))
+                for eval_step in range(args.eval_steps_per_iter):
+                    # Sample an episode
+                    main_eval_ep = main_eval_ep_gen.__next__()
+                    maxq_eval_ep = maxq_eval_ep_gen.__next__()
+                    # Aggregate data collected during the evaluation to the buffers
+                    d['main_eval_len'].append(main_eval_ep['ep_len'])
+                    d['maxq_eval_len'].append(maxq_eval_ep['ep_len'])
+                    d['main_eval_env_ret'].append(main_eval_ep['ep_env_ret'])
+                    d['maxq_eval_env_ret'].append(maxq_eval_ep['ep_env_ret'])
+                main_eval_deque.append(np.mean(d['main_eval_env_ret']))
+                maxq_eval_deque.append(np.mean(d['maxq_eval_env_ret']))
 
         # Increment counters
         iters_so_far += 1
         if args.offline:
+            _str = 'iters so far'
             step = copy(iters_so_far)
         else:
             timesteps_so_far += args.rollout_len
+            _str = 'timesteps so far'
             step = copy(timesteps_so_far)
 
         if rank == 0 and ((iters_so_far - 1) % args.eval_frequency == 0):
 
             # Log stats in csv
-            logger.record_tabular('timestep', step)
-            logger.record_tabular('eval_len', np.mean(d['eval_len']))
-            logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-            logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+            logger.record_tabular(_str, step)
+            logger.record_tabular('main_eval_len', np.mean(d['main_eval_len']))
+            logger.record_tabular('maxq_eval_len', np.mean(d['maxq_eval_len']))
+            logger.record_tabular('main_eval_env_ret', np.mean(d['main_eval_env_ret']))
+            logger.record_tabular('maxq_eval_env_ret', np.mean(d['maxq_eval_env_ret']))
+            logger.record_tabular('avg_main_eval_env_ret', np.mean(main_eval_deque))
+            logger.record_tabular('avg_maxq_eval_env_ret', np.mean(maxq_eval_deque))
             logger.info("dumping stats in .csv file")
             logger.dump_tabular()
 
             if args.record:
                 # Record the last episode in a video
-                record_video(vid_dir, iters_so_far, eval_ep['obs_render'])
+                record_video(vid_dir, iters_so_far, maxq_eval_ep['obs_render'])  # picked only one, maxq
 
             # Log stats in dashboard
             if agent.hps.prioritized_replay:
@@ -406,9 +420,12 @@ def learn(args,
             if agent.hps.clipped_double:
                 wandb.log({'twin_loss': np.mean(d['twin_losses'])},
                           step=step)
-            wandb.log({'eval_len': np.mean(d['eval_len']),
-                       'eval_env_ret': np.mean(d['eval_env_ret']),
-                       'avg_eval_env_ret': np.mean(b_eval)},
+            wandb.log({'main_eval_len': np.mean(d['main_eval_len']),
+                       'maxq_eval_len': np.mean(d['maxq_eval_len']),
+                       'main_eval_env_ret': np.mean(d['main_eval_env_ret']),
+                       'maxq_eval_env_ret': np.mean(d['maxq_eval_env_ret']),
+                       'avg_main_eval_env_ret': np.mean(main_eval_deque),
+                       'avg_maxq_eval_env_ret': np.mean(maxq_eval_deque)},
                       step=step)
 
         # Clear the iteration's running stats

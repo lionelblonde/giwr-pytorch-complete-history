@@ -1,4 +1,4 @@
-from collections import namedtuple, defaultdict
+from collections import defaultdict
 import os.path as osp
 import math
 
@@ -11,6 +11,7 @@ from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.math_util import huber_quant_reg_loss
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
+from helpers.math_util import LRScheduler
 from helpers import h5_util as H
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import perception_stack_parser, Actor, Critic
@@ -35,7 +36,6 @@ class DDPGAgent(object):
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.rollout_len <= self.hps.batch_size
-        assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
@@ -125,16 +125,13 @@ class DDPGAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        # Set up the learning rate schedule
-        def _lr(t):  # flake8: using a def instead of a lambda
-            if self.hps.with_scheduler:
-                return (1.0 - ((t - 1.0) / (self.hps.num_timesteps //
-                                            self.hps.rollout_len)))
-            else:
-                return 1.0
-
         # Set up lr scheduler
-        self.actr_sched = torch.optim.lr_scheduler.LambdaLR(self.actr_opt, _lr)
+        self.actr_sched = LRScheduler(
+            optimizer=self.actr_opt,
+            initial_lr=self.hps.actor_lr,
+            lr_schedule=self.hps.lr_schedule,
+            total_num_steps=self.hps.num_steps,
+        )
 
         assert self.hps.ret_norm or not self.hps.popart
         assert not (self.hps.use_c51 and self.hps.ret_norm)
@@ -519,14 +516,20 @@ class DDPGAgent(object):
         self.crit_opt.step()
         if self.hps.clipped_double:
             self.twin_opt.step()
+
         if update_actor:
+
             self.actr_opt.step()
-            self.actr_sched.step(iters_so_far)
-            # Update target nets
-            self.update_target_net(iters_so_far)  # not an error
+
+            steps_so_far = iters_so_far if self.hps.offline else iters_so_far * self.hps.rollout_len
+            _lr = self.actr_sched.step(steps_so_far=steps_so_far)
+            logger.info(f"lr is {_lr} after {iters_so_far} iters")
+
+        # Update target nets
+        self.update_target_net(iters_so_far)
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
-        lrnows = {'actr': self.actr_sched.get_last_lr()}
+        lrnows = {'actr': _lr}
 
         return metrics, lrnows
 
@@ -601,55 +604,32 @@ class DDPGAgent(object):
                 param = self.actr.state_dict()[p].clone()
                 self.pnp_actr.state_dict()[p].data.copy_(param.data)
 
-    def save(self, path, iters):
-        SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])
-        actr_bundle = SaveBundle(
-            model=self.actr.state_dict(),
-            optimizer=self.actr_opt.state_dict(),
-            scheduler=self.actr_sched.state_dict(),
-        )
-        crit_bundle = SaveBundle(
-            model=self.crit.state_dict(),
-            optimizer=self.crit_opt.state_dict(),
-            scheduler=None,
-        )
-        torch.save(actr_bundle._asdict(), osp.join(path, "model_actr_iter{}.pth".format(iters)))
-        torch.save(crit_bundle._asdict(), osp.join(path, "model_crit_iter{}.pth".format(iters)))
+    def save(self, path, iters_so_far):
+        torch.save(self.actr.state_dict(), osp.join(path, f"actr_{iters_so_far}.pth"))
+        torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
-            twin_bundle = SaveBundle(
-                model=self.twin.state_dict(),
-                optimizer=self.twin_opt.state_dict(),
-                scheduler=None,
-            )
-            torch.save(twin_bundle._asdict(), osp.join(path, "model_twin_iter{}.pth".format(iters)))
+            torch.save(self.twin.state_dict(), osp.join(path, f"twin_{iters_so_far}.pth"))
 
-    def load(self, path, iters):
-        actr_bundle = torch.load(osp.join(path, "model_actr_iter{}.pth".format(iters)))
-        self.actr.load_state_dict(actr_bundle['model'])
-        self.actr_opt.load_state_dict(actr_bundle['optimizer'])
-        self.actr_sched.load_state_dict(actr_bundle['scheduler'])
-        crit_bundle = torch.load(osp.join(path, "model_crit_iter{}.pth".format(iters)))
-        self.crit.load_state_dict(crit_bundle['model'])
-        self.crit_opt.load_state_dict(crit_bundle['optimizer'])
+    def load(self, path, iters_so_far):
+        self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
+        self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
         if self.hps.clipped_double:
-            twin_bundle = torch.load(osp.join(path, "model_twin_iter{}.pth".format(iters)))
-            self.twin.load_state_dict(twin_bundle['model'])
-            self.twin_opt.load_state_dict(twin_bundle['optimizer'])
+            self.twin.load_state_dict(torch.load(osp.join(path, f"twin_{iters_so_far}.pth")))
 
-    def save_memory(self, path, iters):
+    def save_memory(self, path, iters_so_far):
         assert not self.hps.offline, "can only save buffers using the online version"
         replay_buffer = {k: v.data for k, v in self.replay_buffer.ring_buffers.items()}
         _size = self.replay_buffer.num_entries
         size = str(_size).zfill(math.floor(math.log10(self.hps.mem_size)) + 1)
         pct = str(math.floor(100 * _size / self.hps.mem_size))
-        fmtstr = "replay_buffer_iter{}_size{}_{}pct.h5"
-        H.save_dict_h5py(replay_buffer, osp.join(path, fmtstr.format(iters, size, pct)))
+        fname = f"replay_buffer_iter{iters_so_far}_size{size}_{pct}pct.h5"
+        H.save_dict_h5py(replay_buffer, osp.join(path, fname))
 
-    def save_full_history(self, path, iters):
+    def save_full_history(self, path, iters_so_far):
         assert not self.hps.offline, "can only save buffers using the online version"
         # Transform the values (lists) of the dictionary into numpy arrays
         full_history = {k: np.array(v) for k, v in self.replay_buffer.full_history.items()}
         _size = full_history['obs0'].shape[0]
         size = str(_size).zfill(math.floor(math.log10(self.hps.mem_size)) + 1)
-        fmtstr = "replay_history_iter{}_size{}.h5"
-        H.save_dict_h5py(full_history, osp.join(path, fmtstr.format(iters, size)))
+        fname = f"replay_history_iter{iters_so_far}_size{size}.h5"
+        H.save_dict_h5py(full_history, osp.join(path, fname))

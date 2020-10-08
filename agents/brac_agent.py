@@ -1,4 +1,4 @@
-from collections import namedtuple, defaultdict
+from collections import defaultdict
 import os.path as osp
 
 import numpy as np
@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
+from helpers.math_util import LRScheduler
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import perception_stack_parser, TanhGaussActor, ActorVAE, Critic
 
@@ -30,7 +31,6 @@ class BEARAgent(object):
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.rollout_len <= self.hps.batch_size
-        assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
@@ -47,6 +47,10 @@ class BEARAgent(object):
         sync_with_root(self.actr)
         self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
+        self.main_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        self.main_eval_actr.load_state_dict(self.actr.state_dict())
+        self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
 
         self.crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
         sync_with_root(self.crit)
@@ -104,16 +108,13 @@ class BEARAgent(object):
         if self.hps.use_adaptive_alpha:
             self.w_opt = torch.optim.Adam([self.w], lr=self.hps.alpha_lr)
 
-        # Set up the learning rate schedule
-        def _lr(t):  # flake8: using a def instead of a lambda
-            if self.hps.with_scheduler:
-                return (1.0 - ((t - 1.0) / (self.hps.num_timesteps //
-                                            self.hps.rollout_len)))
-            else:
-                return 1.0
-
         # Set up lr scheduler
-        self.actr_sched = torch.optim.lr_scheduler.LambdaLR(self.actr_opt, _lr)
+        self.actr_sched = LRScheduler(
+            optimizer=self.actr_opt,
+            initial_lr=self.hps.actor_lr,
+            lr_schedule=self.hps.lr_schedule,
+            total_num_steps=self.hps.num_steps,
+        )
 
         assert self.hps.ret_norm or not self.hps.popart
         if self.hps.ret_norm:
@@ -192,8 +193,8 @@ class BEARAgent(object):
             self.twin.rms_obs.update(_state)
             self.targ_twin.rms_obs.update(_state)
 
-    # def patcher(self):
-    #     raise NotImplementedError  # no need
+    def patcher(self):
+        raise NotImplementedError  # no need
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -218,19 +219,30 @@ class BEARAgent(object):
             )
         return batch
 
-    def predict(self, ob, apply_noise):
+    def predict(self, ob, apply_noise, max_q):
         """Predict an action, with or without perturbation,
         and optionaly compute and return the associated QZ value.
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
         """
-        # Create tensor from the state (`require_grad=False` by default)
-        ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
         # Predict the action
-        ac = float(self.max_ac) * self.actr.sample(ob, sg=True)
-        # Among the 100 values, take the one with the highest Q value (or Z value)
-        q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
-        index = q_value.argmax(0)
-        ac = ac[index]
+        if apply_noise:
+            _actr = self.actr
+            ob = torch.Tensor(ob[None]).to(self.device)
+            ac = float(self.max_ac) * _actr.sample(ob, sg=True)
+        else:
+            if max_q:
+                _actr = self.maxq_eval_actr
+                ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
+                ac = float(self.max_ac) * _actr.sample(ob, sg=True)
+                # Among the 100 values, take the one with the highest Q value (or Z value)
+                q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
+                index = q_value.argmax(0)
+                ac = ac[index]
+            else:
+                _actr = self.main_eval_actr
+                ob = torch.Tensor(ob[None]).to(self.device)
+                ac = float(self.max_ac) * _actr.mode(ob, sg=True)
+                # Gaussian, so mode == mean, can use either interchangeably
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action
@@ -329,7 +341,9 @@ class BEARAgent(object):
             if self.hps.clip_norm > 0:
                 U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
             self.actr_opt.step()
-            self.actr_sched.step(iters_so_far)
+
+            _lr = self.actr_sched.step(steps_so_far=iters_so_far)
+            logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
             if self.hps.use_adaptive_alpha:
                 self.w_opt.zero_grad()
@@ -422,14 +436,14 @@ class BEARAgent(object):
             metrics['iws'].append(iws)
 
         # Update target nets
-        self.update_target_net(iters_so_far)
+        self.update_target_net()
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
-        lrnows = {'actr': self.actr_sched.get_last_lr()}
+        lrnows = {'actr': _lr}
 
         return metrics, lrnows
 
-    def update_target_net(self, iters_so_far):
+    def update_target_net(self):
         """Update the target networks"""
         for param, targ_param in zip(self.actr.parameters(), self.targ_actr.parameters()):
             targ_param.data.copy_(self.hps.polyak * param.data +
@@ -442,37 +456,22 @@ class BEARAgent(object):
                 targ_param.data.copy_(self.hps.polyak * param.data +
                                       (1. - self.hps.polyak) * targ_param.data)
 
-    def save(self, path, iters):
-        SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])
-        actr_bundle = SaveBundle(
-            model=self.actr.state_dict(),
-            optimizer=self.actr_opt.state_dict(),
-            scheduler=self.actr_sched.state_dict(),
-        )
-        crit_bundle = SaveBundle(
-            model=self.crit.state_dict(),
-            optimizer=self.crit_opt.state_dict(),
-            scheduler=None,
-        )
-        torch.save(actr_bundle._asdict(), osp.join(path, "model_actr_iter{}.pth".format(iters)))
-        torch.save(crit_bundle._asdict(), osp.join(path, "model_crit_iter{}.pth".format(iters)))
-        if self.hps.clipped_double:
-            twin_bundle = SaveBundle(
-                model=self.twin.state_dict(),
-                optimizer=self.twin_opt.state_dict(),
-                scheduler=None,
-            )
-            torch.save(twin_bundle._asdict(), osp.join(path, "model_twin_iter{}.pth".format(iters)))
+    def update_eval_nets(self):
+        for param, eval_param in zip(self.actr.parameters(), self.main_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.actr.parameters(), self.maxq_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
 
-    def load(self, path, iters):
-        actr_bundle = torch.load(osp.join(path, "model_actr_iter{}.pth".format(iters)))
-        self.actr.load_state_dict(actr_bundle['model'])
-        self.actr_opt.load_state_dict(actr_bundle['optimizer'])
-        self.actr_sched.load_state_dict(actr_bundle['scheduler'])
-        crit_bundle = torch.load(osp.join(path, "model_crit_iter{}.pth".format(iters)))
-        self.crit.load_state_dict(crit_bundle['model'])
-        self.crit_opt.load_state_dict(crit_bundle['optimizer'])
+    def save(self, path, iters_so_far):
+        torch.save(self.actr.state_dict(), osp.join(path, f"actr_{iters_so_far}.pth"))
+        torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
-            twin_bundle = torch.load(osp.join(path, "model_twin_iter{}.pth".format(iters)))
-            self.twin.load_state_dict(twin_bundle['model'])
-            self.twin_opt.load_state_dict(twin_bundle['optimizer'])
+            torch.save(self.twin.state_dict(), osp.join(path, f"twin_{iters_so_far}.pth"))
+        torch.save(self.vae.state_dict(), osp.join(path, f"vae_{iters_so_far}.pth"))
+
+    def load(self, path, iters_so_far):
+        self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
+        self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
+        if self.hps.clipped_double:
+            self.twin.load_state_dict(torch.load(osp.join(path, f"twin_{iters_so_far}.pth")))
+        self.vae.load_state_dict(torch.load(osp.join(path, f"vae_{iters_so_far}.pth")))
