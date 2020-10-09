@@ -74,4 +74,4 @@ parameters:
   sub_rate: 20
 
   bcq_phi: 0.05
-  vae_lr: 3.0e-4
+  behavior_lr: 3.0e-4

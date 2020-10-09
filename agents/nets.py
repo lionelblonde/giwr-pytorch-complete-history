@@ -389,8 +389,7 @@ class TanhGaussActor(nn.Module):
         return TanhNormalToolkit.logp(ac, *out[0:2])  # mean, std
 
     def entropy(self, ob):
-        out = self.forward(ob)
-        return TanhNormalToolkit.entropy(out[1])  # std
+        raise NotImplementedError
 
     def act(self, ob):
         # Special for BEAR
@@ -422,12 +421,7 @@ class TanhGaussActor(nn.Module):
 
     def kl(self, ob, other):
         assert isinstance(other, TanhGaussActor)
-        with torch.no_grad():
-            out_a = self.forward(ob)
-            out_b = other.forward(ob)
-            kl = TanhNormalToolkit.kl(*out_a[0:2],
-                                      *out_b[0:2])  # mean, std
-        return kl
+        raise NotImplementedError
 
     def forward(self, ob):
         ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)

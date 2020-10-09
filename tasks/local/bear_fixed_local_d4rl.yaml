@@ -75,11 +75,11 @@ parameters:
   sub_rate: 20
 
   state_dependent_std: true
-  vae_lr: 3.0e-4
+  behavior_lr: 3.0e-4
   use_adaptive_alpha: false
-  alpha_lr: 1.0e-3
-  init_temperature: 100.
-  warm_start: 20000
+  log_alpha_lr: 1.0e-3
+  init_temp_log_alpha: 100.
+  warm_start: 40000
   bear_mmd_kernel: 'laplacian'
   bear_mmd_sigma: 20
   bear_mmd_epsilon: 0.05

@@ -46,8 +46,6 @@ class CQLAgent(object):
         hidden_dims = perception_stack_parser(self.hps.perception_stack)
         self.actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
-        self.targ_actr.load_state_dict(self.actr.state_dict())
         self.main_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
@@ -68,10 +66,10 @@ class CQLAgent(object):
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
         if self.hps.use_adaptive_alpha:
             # Create learnable Lagrangian multiplier
-            self.w = torch.tensor(self.hps.init_temperature).to(self.device)
-            self.w.requires_grad = True
+            self.log_alpha = torch.tensor(self.hps.init_temp_log_alpha).to(self.device)
+            self.log_alpha.requires_grad = True
         else:
-            self.w = self.hps.init_temperature
+            self.log_alpha = self.hps.init_temp_log_alpha
 
         # Set target entropy to minus action dimension
         self.targ_ent = -self.ac_dim
@@ -102,7 +100,8 @@ class CQLAgent(object):
                                              weight_decay=self.hps.wd_scale)
 
         if self.hps.use_adaptive_alpha:
-            self.w_opt = torch.optim.Adam([self.w], lr=self.hps.alpha_lr)
+            self.log_alpha_opt = torch.optim.Adam([self.log_alpha],
+                                                  lr=self.hps.log_alpha_lr)
 
         # Set up lr scheduler
         self.actr_sched = LRScheduler(
@@ -125,9 +124,9 @@ class CQLAgent(object):
     @property
     def alpha(self):
         if self.hps.use_adaptive_alpha:
-            return self.w.exp()
+            return self.log_alpha.exp()
         else:
-            return self.hps.init_temperature
+            return self.hps.init_temp_log_alpha
 
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
@@ -181,7 +180,6 @@ class CQLAgent(object):
         _state = transition['obs0']
         self.actr.rms_obs.update(_state)
         self.crit.rms_obs.update(_state)
-        self.targ_actr.rms_obs.update(_state)
         self.targ_crit.rms_obs.update(_state)
         if self.hps.clipped_double:
             self.twin.rms_obs.update(_state)
@@ -287,7 +285,7 @@ class CQLAgent(object):
             td_len = torch.ones_like(done).to(self.device)
 
         if update_actor:
-            # Actor loss
+
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
             log_prob = self.actr.logp(state, action_from_actr)
             q_from_actr = self.crit.QZ(state, action_from_actr)
@@ -295,8 +293,9 @@ class CQLAgent(object):
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
                 q_from_actr = (self.hps.ensemble_q_lambda * torch.min(q_from_actr, twin_q_from_actr) +
                                (1. - self.hps.ensemble_q_lambda) * torch.max(q_from_actr, twin_q_from_actr))
+
+            # Actor loss
             actr_loss = ((self.alpha * log_prob) - q_from_actr).mean()
-            # Log metrics
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
@@ -310,11 +309,10 @@ class CQLAgent(object):
             logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
             if self.hps.use_adaptive_alpha:
-                alpha_loss = (self.w * (-log_prob - self.targ_ent).detach()).mean()
-                self.w_opt.zero_grad()
+                alpha_loss = (self.log_alpha * (-log_prob - self.targ_ent).detach()).mean()
+                self.log_alpha_opt.zero_grad()
                 alpha_loss.backward(retain_graph=False)
-                self.w_opt.step()
-                # Log metrics
+                self.log_alpha_opt.step()
                 metrics['alpha_loss'].append(alpha_loss)
 
         # Compute QZ estimate
@@ -323,7 +321,7 @@ class CQLAgent(object):
             twin_q = self.denorm_rets(self.twin.QZ(state, action))
 
         # Compute target QZ estimate
-        next_action = float(self.max_ac) * self.targ_actr.sample(next_state, sg=True)
+        next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
         # Note, here, always stochastic selection of the target action
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
@@ -333,7 +331,7 @@ class CQLAgent(object):
                        (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
 
         # Add the causal entropy regularization term
-        next_log_prob = self.targ_actr.logp(next_state, next_action)
+        next_log_prob = self.actr.logp(next_state, next_action)
         q_prime -= self.alpha * next_log_prob
 
         # Assemble the target
@@ -491,9 +489,6 @@ class CQLAgent(object):
 
     def update_target_net(self):
         """Update the target networks"""
-        for param, targ_param in zip(self.actr.parameters(), self.targ_actr.parameters()):
-            targ_param.data.copy_(self.hps.polyak * param.data +
-                                  (1. - self.hps.polyak) * targ_param.data)
         for param, targ_param in zip(self.crit.parameters(), self.targ_crit.parameters()):
             targ_param.data.copy_(self.hps.polyak * param.data +
                                   (1. - self.hps.polyak) * targ_param.data)

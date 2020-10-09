@@ -101,14 +101,19 @@ def argparser(description="Offline RL Experiment"):
 
     boolean_flag(parser, 'state_dependent_std', default=False)
     parser.add_argument('--bcq_phi', type=float, default=0.05)
-    parser.add_argument('--vae_lr', type=float, default=3e-4)
-    boolean_flag(parser, 'use_adaptive_alpha', default=True)
+    parser.add_argument('--behavior_lr', type=float, default=3e-4)
+    boolean_flag(parser, 'use_adaptive_alpha', default=False)
     parser.add_argument('--alpha_lr', type=float, default=1e-3)
-    parser.add_argument('--init_temperature', type=float, default=0.1)
+    parser.add_argument('--init_temp_log_alpha', type=float, default=0.1)
     parser.add_argument('--crit_targ_update_freq', type=int, default=2)
     parser.add_argument('--warm_start', type=int, default=20000)
     parser.add_argument('--bear_mmd_kernel', type=str, choices=['laplacian', 'gaussian'], default='laplacian')
     parser.add_argument('--bear_mmd_sigma', type=float, default=20.)
     parser.add_argument('--bear_mmd_epsilon', type=float, default=0.05)
+    boolean_flag(parser, 'brac_use_adaptive_alpha_ent', default=False)
+    boolean_flag(parser, 'brac_use_adaptive_alpha_div', default=False)
+    parser.add_argument('--brac_init_temp_log_alpha_ent', type=float, default=0.)
+    parser.add_argument('--brac_init_temp_log_alpha_div', type=float, default=1.)
+    boolean_flag(parser, 'brac_value_kl_pen', default=True)
 
     return parser

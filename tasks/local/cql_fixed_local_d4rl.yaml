@@ -78,6 +78,6 @@ parameters:
   # SAC, BCQ, BEAR
   state_dependent_std: false
   use_adaptive_alpha: true
-  alpha_lr: 1.0e-4
-  init_temperature: 0.1
+  log_alpha_lr: 1.0e-4
+  init_temp_log_alpha: 0.1
   crit_targ_update_freq: 2

@@ -49,7 +49,8 @@ BOOL_ARGS = ['cuda', 'render', 'record',
              'clipped_double', 'targ_actor_smoothing',
              'use_c51', 'use_qr',
              'offline', 'use_expert_demos',
-             'state_dependent_std', 'use_adaptive_alpha']
+             'state_dependent_std', 'use_adaptive_alpha',
+             'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
@@ -405,15 +406,20 @@ def get_hps(sweep):
 
             'state_dependent_std': CONFIG['parameters'].get('state_dependent_std', False),
             'bcq_phi': CONFIG['parameters'].get('bcq_phi', 0.05),
-            'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
-            'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
-            'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
-            'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
+            'behavior_lr': CONFIG['parameters'].get('behavior_lr', 1e-3),
+            'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', False),
+            'log_alpha_lr': CONFIG['parameters'].get('log_alpha_lr', 1e-4),
+            'init_temp_log_alpha': CONFIG['parameters'].get('init_temp_log_alpha', 0.1),
             'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
             'warm_start': CONFIG['parameters'].get('warm_start', 20000),
             'bear_mmd_kernel': CONFIG['parameters'].get('bear_mmd_kernel', 'laplacian'),
             'bear_mmd_sigma': CONFIG['parameters'].get('bear_mmd_sigma', 20.),
             'bear_mmd_epsilon': CONFIG['parameters'].get('bear_mmd_epsilon', 0.05),
+            'brac_use_adaptive_alpha_ent': CONFIG['parameters'].get('brac_use_adaptive_alpha_ent', False),
+            'brac_use_adaptive_alpha_div': CONFIG['parameters'].get('brac_use_adaptive_alpha_div', False),
+            'brac_init_temp_log_alpha_ent': CONFIG['parameters'].get('brac_init_temp_log_alpha_ent', 0.),
+            'brac_init_temp_log_alpha_div': CONFIG['parameters'].get('brac_init_temp_log_alpha_div', 1.),
+            'brac_value_kl_pen': CONFIG['parameters'].get('brac_value_kl_pen', True),
         }
     else:
         # No search, fixed map
@@ -491,15 +497,20 @@ def get_hps(sweep):
 
             'state_dependent_std': CONFIG['parameters'].get('state_dependent_std', False),
             'bcq_phi': CONFIG['parameters'].get('bcq_phi', 0.05),
-            'vae_lr': CONFIG['parameters'].get('vae_lr', 1e-3),
-            'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', True),
-            'alpha_lr': CONFIG['parameters'].get('alpha_lr', 1e-4),
-            'init_temperature': CONFIG['parameters'].get('init_temperature', 0.1),
+            'behavior_lr': CONFIG['parameters'].get('behavior_lr', 1e-3),
+            'use_adaptive_alpha': CONFIG['parameters'].get('use_adaptive_alpha', False),
+            'log_alpha_lr': CONFIG['parameters'].get('log_alpha_lr', 1e-4),
+            'init_temp_log_alpha': CONFIG['parameters'].get('init_temp_log_alpha', 0.1),
             'crit_targ_update_freq': CONFIG['parameters'].get('crit_targ_update_freq', 2),
             'warm_start': CONFIG['parameters'].get('warm_start', 20000),
             'bear_mmd_kernel': CONFIG['parameters'].get('bear_mmd_kernel', 'laplacian'),
             'bear_mmd_sigma': CONFIG['parameters'].get('bear_mmd_sigma', 20.),
             'bear_mmd_epsilon': CONFIG['parameters'].get('bear_mmd_epsilon', 0.05),
+            'brac_use_adaptive_alpha_ent': CONFIG['parameters'].get('brac_use_adaptive_alpha_ent', False),
+            'brac_use_adaptive_alpha_div': CONFIG['parameters'].get('brac_use_adaptive_alpha_div', False),
+            'brac_init_temp_log_alpha_ent': CONFIG['parameters'].get('brac_init_temp_log_alpha_ent', 0.),
+            'brac_init_temp_log_alpha_div': CONFIG['parameters'].get('brac_init_temp_log_alpha_div', 1.),
+            'brac_value_kl_pen': CONFIG['parameters'].get('brac_value_kl_pen', True),
         }
 
     # Duplicate for each environment

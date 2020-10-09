@@ -11,7 +11,11 @@ from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers.math_util import LRScheduler
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import perception_stack_parser, TanhGaussActor, ActorVAE, Critic
+from agents.nets import perception_stack_parser, TanhGaussActor, Critic
+
+
+ALPHA_DIV_CLAMPS = [0., 500.]
+TARG_DIV = 0.
 
 
 class BEARAgent(object):
@@ -45,8 +49,6 @@ class BEARAgent(object):
         hidden_dims = perception_stack_parser(self.hps.perception_stack)
         self.actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
-        self.targ_actr.load_state_dict(self.actr.state_dict())
         self.main_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
@@ -64,19 +66,28 @@ class BEARAgent(object):
             self.targ_twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
-        # Create VAE actor, "batch-constrained" by construction
-        self.vae = ActorVAE(self.env, self.hps, hidden_dims=hidden_dims[2]).to(self.device)
-        sync_with_root(self.vae)
+        # Create another actor, trained via BC to estimate the distribution of the behavior policy
+        self.actr_b = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        sync_with_root(self.actr_b)
 
-        # adaptive alpha = True  # original hp in BEAR codebase
-        # adaptive alpha = False  # better hp according to BRAC
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
-        if self.hps.use_adaptive_alpha:
+        if self.hps.brac_use_adaptive_alpha_ent:
             # Create learnable Lagrangian multiplier
-            self.w = torch.tensor(self.hps.init_temperature).to(self.device)
-            self.w.requires_grad = True
+            self.log_alpha_ent = torch.tensor(self.hps.brac_init_temp_log_alpha_ent).to(self.device)
+            self.log_alpha_ent.requires_grad = True
         else:
-            self.w = self.hps.init_temperature  # hp from BRAC's hp search: 30.
+            self.log_alpha_ent = self.hps.brac_init_temp_log_alpha_ent
+        if self.hps.brac_use_adaptive_alpha_div:
+            # Create learnable Lagrangian multiplier
+            self.log_alpha_div = torch.tensor(self.hps.brac_init_temp_log_alpha_div).to(self.device)
+            self.log_alpha_div.requires_grad = True
+        else:
+            self.log_alpha_div = self.hps.brac_init_temp_log_alpha_div
+
+        # Set target entropy to minus action dimension
+        self.targ_ent = -self.ac_dim
+        # Set target divergence to hard-coded value (advised in BRAC codebase: 0.)
+        self.targ_div = TARG_DIV
 
         # Set up replay buffer
         shapes = {
@@ -103,10 +114,15 @@ class BEARAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=self.hps.vae_lr)
+        self.actr_b_opt = torch.optim.Adam(self.actr_b.parameters(),
+                                           lr=self.hps.behavior_lr)
 
-        if self.hps.use_adaptive_alpha:
-            self.w_opt = torch.optim.Adam([self.w], lr=self.hps.alpha_lr)
+        if self.hps.brac_use_adaptive_alpha_ent:  # choice: same lr for both alphas
+            self.log_alpha_ent_opt = torch.optim.Adam([self.log_alpha_ent],
+                                                      lr=self.hps.alpha_lr)
+        if self.hps.brac_use_adaptive_alpha_div:  # choice: same lr for both alphas
+            self.log_alpha_div_opt = torch.optim.Adam([self.log_alpha_div],
+                                                      lr=self.hps.alpha_lr)
 
         # Set up lr scheduler
         self.actr_sched = LRScheduler(
@@ -126,14 +142,21 @@ class BEARAgent(object):
         if self.hps.clipped_double:
             log_module_info(logger, 'twin', self.crit)
 
-        log_module_info(logger, 'vae', self.vae)
+        log_module_info(logger, 'actr_b', self.actr_b)
 
     @property
-    def alpha(self):
+    def alpha_ent(self):
         if self.hps.use_adaptive_alpha:
-            return self.w.exp()
+            return self.log_alpha_ent.exp()
         else:
-            return self.hps.init_temperature
+            return self.hps.init_temp_log_alpha
+
+    @property
+    def alpha_div(self):
+        if self.hps.use_adaptive_alpha:
+            return self.log_alpha_div.exp().data.clamp_(*ALPHA_DIV_CLAMPS)
+        else:
+            return self.hps.init_temp_log_alpha
 
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
@@ -187,7 +210,6 @@ class BEARAgent(object):
         _state = transition['obs0']
         self.actr.rms_obs.update(_state)
         self.crit.rms_obs.update(_state)
-        self.targ_actr.rms_obs.update(_state)
         self.targ_crit.rms_obs.update(_state)
         if self.hps.clipped_double:
             self.twin.rms_obs.update(_state)
@@ -270,70 +292,45 @@ class BEARAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
+        # Train the behavioral cloning actor
+        action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
+        actr_b_loss = F.mse_loss(action_from_actr_b, action)
+
+        self.actr_b_opt.zero_grad()
+        actr_b_loss.backward()
+        average_gradients(self.actr_b, self.device)
+        self.actr_b_opt.step()
+
         if update_actor:
 
-            # Train a behavioral cloning VAE policy
-            recon, mean, std = self.vae(state, action)
-            recon_loss = F.mse_loss(recon, action)
-            kl_loss = -0.5 * (1 + std.pow(2).log() - mean.pow(2) - std.pow(2)).mean()
-            # Note, the previous is just the closed form kl divergence for the normal distribution
-            vae_loss = recon_loss + (0.5 * kl_loss)
+            # Train the actor
+            action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
+            log_prob = self.actr.logp(state, action_from_actr)
+            q_from_actr = self.crit.QZ(state, action_from_actr)
+            if self.hps.clipped_double:
+                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
+                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
 
-            self.vae_opt.zero_grad()
-            vae_loss.backward()
-            self.vae_opt.step()
+            # Compute the divergence between the actor and the behavior policy
+            # Note, we only care about the KL divergence: best reported results in BRAC
 
-            expansion = 4  # original hp in BEAR codebase
-            squashed_action_from_vae, action_from_vae = self.vae.decodex(state, expansion=expansion)
-            expanded_state = state.unsqueeze(1).repeat(1, expansion, 1).view(-1, state.shape[1])
-            squashed_action_from_actor, action_from_actor = self.actr.act(expanded_state)
-            new_shape = [action.shape[0], expansion, action.shape[1]]
-            squashed_action_from_actor = squashed_action_from_actor.view(*new_shape)
-            action_from_actor = action_from_actor.view(*new_shape)
+            # In BRAC, the KL considered is KL(policy || behavior policy), so we only need to compute the
+            # log prob of the policy (a_) over samples from the policy (_a) and the behavior policy (_b)
+            # log_prob_aa is self.actr.logp(state, action_from_actr) (already computed: log_prob)
+            # log_prob_aa is self.actr.logp(state, action_from_actr_b) (already partially computed)
+            div = (log_prob - self.actr.logp(state, action_from_actr_b).detach()).mean()
 
-            # # For monitoring purposes, never optimized
-            # squashed_action_loss = F.mse_loss(
-            #     squashed_action_from_vae,
-            #     squashed_action_from_actor,
-            #     reduction='none',
-            # ).sum(-1)
-            # action_loss = F.mse_loss(
-            #     action_from_vae,
-            #     action_from_actor,
-            #     reduction='none',
-            # ).sum(-1)
-            # metrics['squashed_action_loss'].append(squashed_action_loss)
-            # metrics['action_loss'].append(action_loss)
-
-            # BEAR makes the actor maximize the value of the critic that has the minimal value
-            # independently for each batch dimension (some update the first, some the second).
-            _action = float(self.max_ac) * squashed_action_from_actor
-            collapsed_action = _action[:, 0, :]  # along the first mmd-expanded dimension
-            assert collapsed_action.shape == action.shape
-            neg_actr_loss_1 = self.crit.QZ(state, collapsed_action)
-            neg_actr_loss_2 = self.twin.QZ(state, collapsed_action)
-            _actr_loss = -torch.min(neg_actr_loss_1, neg_actr_loss_2)[:, 0]
-
-            # Deal with the MMD divergence
-            inputs = dict(input_a=action_from_vae,
-                          input_b=action_from_actor,
-                          sigma=self.hps.bear_mmd_sigma)
-            if self.hps.bear_mmd_kernel == 'laplacian':
-                mmd_loss = self.mmd_loss_laplacian(**inputs)
-            elif self.hps.bear_mmd_kernel == 'gaussian':
-                mmd_loss = self.mmd_loss_gaussian(**inputs)
-            else:
-                raise NotImplementedError("invalid kernel.")
+            # Only update the policy after a certain number of iteration (BRAC codebase: 20000)
+            start_using_q = torch.tensor(float(iters_so_far >= self.hps.warm_start)).to(self.device)
 
             # Actor loss
-            # Only update the policy after a certain number of iteration
-            start_using_q = torch.tensor(float(iters_so_far >= self.hps.warm_start)).to(self.device)
-            actr_loss = ((_actr_loss * start_using_q.detach()) +
-                         (self.alpha * (mmd_loss - self.hps.bear_mmd_epsilon))).mean()
+            actr_loss = ((-q_from_actr * start_using_q.detach()) +
+                         (self.alpha_div * div) +
+                         (self.alpha_ent * log_prob)).mean()
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
-            if self.hps.use_adaptive_alpha:
+            if self.hps.brac_use_adaptive_alpha_ent or self.hps.brac_use_adaptive_alpha_div:
                 actr_loss.backward(retain_graph=True)
             else:
                 actr_loss.backward()
@@ -345,13 +342,20 @@ class BEARAgent(object):
             _lr = self.actr_sched.step(steps_so_far=iters_so_far)
             logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
-            if self.hps.use_adaptive_alpha:
-                self.w_opt.zero_grad()
-                (-actr_loss).backward()
-                self.w_opt.step()
-                self.w.data.clamp_(min=-5.0, max=10.0)  # HAXX: alpha clamped in [0.0067, 22026.47]
+            if self.hps.brac_use_adaptive_alpha_ent:
+                alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
+                self.log_alpha_ent_opt.zero_grad()
+                alpha_ent_loss.backward()
+                self.log_alpha_ent_opt.step()
 
-            logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
+            if self.hps.brac_use_adaptive_alpha_div:
+                alpha_div_loss = (-self.log_alpha_div * (div - self.targ_div).detach()).mean()
+                self.log_alpha_div_opt.zero_grad()
+                alpha_div_loss.backward()
+                self.log_alpha_div_opt.step()
+
+            logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
+            logger.info(f"alpha_div: {self.alpha_div}")  # leave this here, for sanity checks
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
@@ -360,7 +364,7 @@ class BEARAgent(object):
 
         # Compute target QZ estimate
         next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
-        next_action = float(self.max_ac) * self.targ_actr.sample(next_state)
+        next_action = float(self.max_ac) * self.actr.sample(next_state)
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
@@ -369,6 +373,17 @@ class BEARAgent(object):
                        (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
         # Take max over each action sampled from the VAE
         q_prime = q_prime.reshape(self.hps.batch_size, -1).max(1)[0].reshape(-1, 1)
+
+        # Add the causal entropy regularization term
+        next_log_prob = self.actr.logp(next_state, next_action)
+        q_prime -= self.alpha_ent * next_log_prob
+
+        if self.brac_value_kl_pen:
+            # Add value penalty regularizater
+            next_action_from_actr_b = float(self.max_ac) * self.actr_b.sample(next_state, sg=True)
+            next_log_prob_from_actr_b = self.actr.logp(next_state, next_action_from_actr_b)
+            q_prime -= self.alpha_div * (next_log_prob - next_log_prob_from_actr_b).mean()
+
         # Assemble the target
         targ_q = (reward +
                   (self.hps.gamma ** td_len) * (1. - done) *
@@ -445,9 +460,6 @@ class BEARAgent(object):
 
     def update_target_net(self):
         """Update the target networks"""
-        for param, targ_param in zip(self.actr.parameters(), self.targ_actr.parameters()):
-            targ_param.data.copy_(self.hps.polyak * param.data +
-                                  (1. - self.hps.polyak) * targ_param.data)
         for param, targ_param in zip(self.crit.parameters(), self.targ_crit.parameters()):
             targ_param.data.copy_(self.hps.polyak * param.data +
                                   (1. - self.hps.polyak) * targ_param.data)

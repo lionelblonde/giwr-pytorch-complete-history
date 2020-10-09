@@ -96,7 +96,8 @@ class BCQAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.vae_opt = torch.optim.Adam(self.vae.parameters(), lr=self.hps.vae_lr)
+        self.vae_opt = torch.optim.Adam(self.vae.parameters(),
+                                        lr=self.hps.behavior_lr)
 
         # Set up lr scheduler
         self.actr_sched = LRScheduler(
@@ -250,7 +251,7 @@ class BCQAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
-        # Train a behavioral cloning VAE policy
+        # Train the behavioral cloning actor
         recon, mean, std = self.vae(state, action)
         recon_loss = F.mse_loss(recon, action)
         kl_loss = -0.5 * (1 + std.pow(2).log() - mean.pow(2) - std.pow(2)).mean()
@@ -259,6 +260,7 @@ class BCQAgent(object):
 
         self.vae_opt.zero_grad()
         vae_loss.backward()
+        average_gradients(self.vae, self.device)
         self.vae_opt.step()
 
         # Compute QZ estimate
