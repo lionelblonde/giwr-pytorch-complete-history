@@ -17,6 +17,7 @@ from agents.ddpg_agent import DDPGAgent
 from agents.sac_agent import SACAgent
 from agents.bcq_agent import BCQAgent
 from agents.bear_agent import BEARAgent
+from agents.brac_agent import BRACAgent
 from agents.cql_agent import CQLAgent
 from helpers import h5_util as H
 
@@ -157,6 +158,17 @@ def train(args):
     elif args.algo == 'bear':
         def agent_wrapper():
             return BEARAgent(
+                env=env,
+                device=device,
+                hps=args,
+                to_load_in_memory=to_load_in_memory,
+            )
+
+        assert args.offline
+
+    elif args.algo == 'brac':
+        def agent_wrapper():
+            return BRACAgent(
                 env=env,
                 device=device,
                 hps=args,

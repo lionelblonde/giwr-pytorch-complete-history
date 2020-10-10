@@ -18,7 +18,7 @@ ALPHA_DIV_CLAMPS = [0., 500.]
 TARG_DIV = 0.
 
 
-class BEARAgent(object):
+class BRACAgent(object):
 
     def __init__(self, env, device, hps, to_load_in_memory):
         self.env = env
@@ -119,10 +119,10 @@ class BEARAgent(object):
 
         if self.hps.brac_use_adaptive_alpha_ent:  # choice: same lr for both alphas
             self.log_alpha_ent_opt = torch.optim.Adam([self.log_alpha_ent],
-                                                      lr=self.hps.alpha_lr)
+                                                      lr=self.hps.log_alpha_lr)
         if self.hps.brac_use_adaptive_alpha_div:  # choice: same lr for both alphas
             self.log_alpha_div_opt = torch.optim.Adam([self.log_alpha_div],
-                                                      lr=self.hps.alpha_lr)
+                                                      lr=self.hps.log_alpha_lr)
 
         # Set up lr scheduler
         self.actr_sched = LRScheduler(

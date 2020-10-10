@@ -19,7 +19,8 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)
-    parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq', 'bear', 'cql'], default=None)
+    parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq',
+                                                     'bear', 'brac', 'cql'], default=None)
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
@@ -103,7 +104,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--bcq_phi', type=float, default=0.05)
     parser.add_argument('--behavior_lr', type=float, default=3e-4)
     boolean_flag(parser, 'use_adaptive_alpha', default=False)
-    parser.add_argument('--alpha_lr', type=float, default=1e-3)
+    parser.add_argument('--log_alpha_lr', type=float, default=1e-3)
     parser.add_argument('--init_temp_log_alpha', type=float, default=0.1)
     parser.add_argument('--crit_targ_update_freq', type=int, default=2)
     parser.add_argument('--warm_start', type=int, default=20000)

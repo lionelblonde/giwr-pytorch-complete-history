@@ -108,7 +108,7 @@ class BEARAgent(object):
 
         if self.hps.use_adaptive_alpha:
             self.log_alpha_opt = torch.optim.Adam([self.log_alpha],
-                                                  lr=self.hps.alpha_lr)
+                                                  lr=self.hps.log_alpha_lr)
 
         # Set up lr scheduler
         self.actr_sched = LRScheduler(

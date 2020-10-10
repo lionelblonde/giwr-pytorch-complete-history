@@ -1,0 +1,78 @@
+meta:
+  task: 'train'
+  benchmark: 'd4rl'
+  algo: 'bear'
+
+resources:
+  cuda: false
+
+logging:
+  wandb_project: 'flareon'
+  record: false
+
+# Training
+save_frequency: 1e5
+num_steps: 5e5
+training_steps_per_iter: 1
+eval_steps_per_iter: 10
+eval_frequency: 10
+
+# Model
+perception_stack: '"256 256, 256 256, 750 750"'
+layer_norm: true
+
+# Optimization
+actor_lr: 1.0e-4
+critic_lr: 1.0e-3
+lr_schedule: 'linear'
+clip_norm: 0.
+wd_scale: 0.
+
+# Algorithm
+batch_size: 256
+gamma: 0.99
+mem_size: 2e6
+polyak: 0.005
+targ_up_freq: 100
+n_step_returns: false
+lookahead: 10
+ret_norm: false
+popart: false
+
+# TD3
+clipped_double: true
+ensemble_q_lambda: 0.75
+targ_actor_smoothing: false
+td3_std: 0.2
+td3_c: 0.5
+actor_update_delay: 1
+
+# Prioritized replay
+prioritized_replay: false
+alpha: 0.3
+beta: 1.
+ranked: false
+unreal: false
+
+# Distributional RL
+use_c51: false
+use_qr: false
+c51_num_atoms: 21
+c51_vmin: -10.
+c51_vmax: 10.
+num_tau: 200
+
+# Offline RL
+offline: true
+use_expert_demos: false
+sub_rate: 20
+
+state_dependent_std: true
+behavior_lr: 3.0e-4
+use_adaptive_alpha: false
+log_alpha_lr: 1.0e-3
+init_temp_log_alpha: 100.
+warm_start: 40000
+bear_mmd_kernel: 'laplacian'
+bear_mmd_sigma: 20
+bear_mmd_epsilon: 0.05

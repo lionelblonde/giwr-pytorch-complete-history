@@ -14,36 +14,6 @@ MUJOCO_ROBOTS = [
 MUJOCO_ENVS = ["{}-v2".format(name) for name in MUJOCO_ROBOTS]
 MUJOCO_ENVS.extend(["{}-v3".format(name) for name in MUJOCO_ROBOTS])
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> DM Control environments.
-
-DMC_ROBOTS = [
-    'Hopper-Hop',
-    'Cheetah-Run',
-    'Walker-Walk',
-    'Walker-Run',
-
-    'Stacker-Stack_2',
-    'Stacker-Stack_4',
-
-    'Humanoid-Walk',
-    'Humanoid-Run',
-    'Humanoid-Run_Pure_State',
-
-    'Humanoid_CMU-Stand',
-    'Humanoid_CMU-Run',
-
-    'Quadruped-Walk',
-    'Quadruped-Run',
-    'Quadruped-Escape',
-    'Quadruped-Fetch',
-
-    'Dog-Run',
-    'Dog-Fetch',
-]
-
-DMC_ENVS = ["{}-Feat-v0".format(name) for name in DMC_ROBOTS]
-# DMC_ENVS.extend(["{}-Pix-v0".format(name) for name in DMC_ROBOTS])  # XXX: no pixels yet
-
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> D4RL environments.
 
 # Note, we here consider every environment of the benchmark except 'carla-town-full-v0',
@@ -166,6 +136,5 @@ D4RL_ENVS = list(REF_MIN_SCORE.keys())
 
 BENCHMARKS = {
     'mujoco': MUJOCO_ENVS,
-    'dmc': DMC_ENVS,
     'd4rl': D4RL_ENVS,
 }
