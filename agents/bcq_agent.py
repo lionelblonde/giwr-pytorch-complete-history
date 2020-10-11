@@ -41,30 +41,38 @@ class BCQAgent(object):
         # Parse the noise types
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
+        # Create observation normalizer that maintains running statistics
+        self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
+
+        assert self.hps.ret_norm or not self.hps.popart
+        if self.hps.ret_norm:
+            # Create return normalizer that maintains running statistics
+            self.rms_ret = RunMoms(shape=(1,), use_mpi=False)
+
         # Create online and target nets, and initialize the target nets
         hidden_dims = perception_stack_parser(self.hps.perception_stack)
-        self.actr = ActorPhi(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        self.actr = ActorPhi(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = ActorPhi(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        self.targ_actr = ActorPhi(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
 
-        self.crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+        self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         sync_with_root(self.crit)
-        self.targ_crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+        self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         # Create VAE actor, "batch-constrained" by construction
-        self.vae = ActorVAE(self.env, self.hps, hidden_dims=hidden_dims[2]).to(self.device)
+        self.vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
         sync_with_root(self.vae)
-        self.main_eval_vae = ActorVAE(self.env, self.hps, hidden_dims=hidden_dims[2]).to(self.device)
-        self.maxq_eval_vae = ActorVAE(self.env, self.hps, hidden_dims=hidden_dims[2]).to(self.device)
+        self.main_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        self.maxq_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
         self.main_eval_vae.load_state_dict(self.vae.state_dict())
         self.maxq_eval_vae.load_state_dict(self.vae.state_dict())
         # Note: why do we create another VAE model for evaluation?
@@ -106,11 +114,6 @@ class BCQAgent(object):
             lr_schedule=self.hps.lr_schedule,
             total_num_steps=self.hps.num_steps,
         )
-
-        assert self.hps.ret_norm or not self.hps.popart
-        if self.hps.ret_norm:
-            # Create return normalizer that maintains running statistics
-            self.rms_ret = RunMoms(shape=(1,), use_mpi=False)  # Careful, set to False here
 
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
@@ -167,15 +170,8 @@ class BCQAgent(object):
         """Store the transition in memory and update running moments"""
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the running moments for all the networks (online and targets)
-        _state = transition['obs0']
-        self.actr.rms_obs.update(_state)
-        self.crit.rms_obs.update(_state)
-        self.targ_actr.rms_obs.update(_state)
-        self.targ_crit.rms_obs.update(_state)
-        if self.hps.clipped_double:
-            self.twin.rms_obs.update(_state)
-            self.targ_twin.rms_obs.update(_state)
+        # Update the observation normalizer
+        self.rms_obs.update(transition['obs0'])
 
     def patcher(self):
         raise NotImplementedError  # no need

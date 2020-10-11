@@ -45,31 +45,40 @@ class BRACAgent(object):
         # Parse the noise types
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
+        # Create observation normalizer that maintains running statistics
+        self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
+
+        assert self.hps.ret_norm or not self.hps.popart
+        if self.hps.ret_norm:
+            # Create return normalizer that maintains running statistics
+            self.rms_ret = RunMoms(shape=(1,), use_mpi=False)
+
         # Create online and target nets, and initialize the target nets
         hidden_dims = perception_stack_parser(self.hps.perception_stack)
-        self.actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        self.actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.main_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
-        self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        self.main_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
 
-        self.crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+        self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         sync_with_root(self.crit)
-        self.targ_crit = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+        self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic(self.env, self.hps, hidden_dims=hidden_dims[1]).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         # Create another actor, trained via BC to estimate the distribution of the behavior policy
-        self.actr_b = TanhGaussActor(self.env, self.hps, hidden_dims=hidden_dims[0]).to(self.device)
+        self.actr_b = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr_b)
 
+        self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
         if self.hps.brac_use_adaptive_alpha_ent:
             # Create learnable Lagrangian multiplier
@@ -132,11 +141,6 @@ class BRACAgent(object):
             total_num_steps=self.hps.num_steps,
         )
 
-        assert self.hps.ret_norm or not self.hps.popart
-        if self.hps.ret_norm:
-            # Create return normalizer that maintains running statistics
-            self.rms_ret = RunMoms(shape=(1,), use_mpi=False)  # Careful, set to False here
-
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
         if self.hps.clipped_double:
@@ -146,17 +150,17 @@ class BRACAgent(object):
 
     @property
     def alpha_ent(self):
-        if self.hps.use_adaptive_alpha:
+        if self.hps.brac_use_adaptive_alpha_ent:
             return self.log_alpha_ent.exp()
         else:
-            return self.hps.init_temp_log_alpha
+            return self.hps.brac_init_temp_log_alpha_ent
 
     @property
     def alpha_div(self):
-        if self.hps.use_adaptive_alpha:
+        if self.hps.brac_use_adaptive_alpha_div:
             return self.log_alpha_div.exp().data.clamp_(*ALPHA_DIV_CLAMPS)
         else:
-            return self.hps.init_temp_log_alpha
+            return self.hps.brac_init_temp_log_alpha_div
 
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
@@ -206,14 +210,8 @@ class BRACAgent(object):
         """Store the transition in memory and update running moments"""
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the running moments for all the networks (online and targets)
-        _state = transition['obs0']
-        self.actr.rms_obs.update(_state)
-        self.crit.rms_obs.update(_state)
-        self.targ_crit.rms_obs.update(_state)
-        if self.hps.clipped_double:
-            self.twin.rms_obs.update(_state)
-            self.targ_twin.rms_obs.update(_state)
+        # Update the observation normalizer
+        self.rms_obs.update(transition['obs0'])
 
     def patcher(self):
         raise NotImplementedError  # no need
@@ -363,7 +361,6 @@ class BRACAgent(object):
             twin_q = self.denorm_rets(self.twin.QZ(state, action))
 
         # Compute target QZ estimate
-        next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
         next_action = float(self.max_ac) * self.actr.sample(next_state)
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
@@ -378,7 +375,7 @@ class BRACAgent(object):
         next_log_prob = self.actr.logp(next_state, next_action)
         q_prime -= self.alpha_ent * next_log_prob
 
-        if self.brac_value_kl_pen:
+        if self.hps.brac_value_kl_pen:
             # Add value penalty regularizater
             next_action_from_actr_b = float(self.max_ac) * self.actr_b.sample(next_state, sg=True)
             next_log_prob_from_actr_b = self.actr.logp(next_state, next_action_from_actr_b)
@@ -479,11 +476,11 @@ class BRACAgent(object):
         torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
             torch.save(self.twin.state_dict(), osp.join(path, f"twin_{iters_so_far}.pth"))
-        torch.save(self.vae.state_dict(), osp.join(path, f"vae_{iters_so_far}.pth"))
+        torch.save(self.actr_b.state_dict(), osp.join(path, f"actr_b_{iters_so_far}.pth"))
 
     def load(self, path, iters_so_far):
         self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
         self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
         if self.hps.clipped_double:
             self.twin.load_state_dict(torch.load(osp.join(path, f"twin_{iters_so_far}.pth")))
-        self.vae.load_state_dict(torch.load(osp.join(path, f"vae_{iters_so_far}.pth")))
+        self.actr_b.load_state_dict(torch.load(osp.join(path, f"actr_b_{iters_so_far}.pth")))

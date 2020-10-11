@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from helpers.distributed_util import RunMoms
 
 
 STANDARDIZED_OB_CLAMPS = [-5., 5.]
@@ -54,7 +53,7 @@ def perception_stack_parser(stack_string):
 
 class Actor(nn.Module):
 
-    def __init__(self, env, hps, hidden_dims):
+    def __init__(self, env, hps, rms_obs, hidden_dims):
         super(Actor, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -62,7 +61,7 @@ class Actor(nn.Module):
                           np.abs(np.amin(env.action_space.low.astype('float32'))))
         self.hps = hps
         # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.rms_obs = rms_obs
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
@@ -101,7 +100,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
 
-    def __init__(self, env, hps, hidden_dims):
+    def __init__(self, env, hps, rms_obs, hidden_dims):
         super(Critic, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -113,7 +112,7 @@ class Critic(nn.Module):
             num_heads = 1
         self.hps = hps
         # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.rms_obs = rms_obs
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
@@ -154,7 +153,7 @@ class Critic(nn.Module):
 
 class ActorPhi(nn.Module):
 
-    def __init__(self, env, hps, hidden_dims):
+    def __init__(self, env, hps, rms_obs, hidden_dims):
         super(ActorPhi, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -162,7 +161,7 @@ class ActorPhi(nn.Module):
                           np.abs(np.amin(env.action_space.low.astype('float32'))))
         self.hps = hps
         # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.rms_obs = rms_obs
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
@@ -194,7 +193,7 @@ class ActorPhi(nn.Module):
 
 class ActorVAE(nn.Module):
 
-    def __init__(self, env, hps, hidden_dims):
+    def __init__(self, env, hps, rms_obs, hidden_dims):
         super(ActorVAE, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -206,7 +205,7 @@ class ActorVAE(nn.Module):
         assert hidden_dims[0] == hidden_dims[1], "must be identical"
         hidden_dim = hidden_dims[0]  # arbitrarily chose index 0
         # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.rms_obs = rms_obs
         # Assemble the last layers and output heads
         self.encoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
@@ -351,13 +350,13 @@ class TanhNormalToolkit(object):
 
 class TanhGaussActor(nn.Module):
 
-    def __init__(self, env, hps, hidden_dims):
+    def __init__(self, env, hps, rms_obs, hidden_dims):
         super(TanhGaussActor, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
         self.hps = hps
         # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.rms_obs = rms_obs
         # Define perception stack
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
