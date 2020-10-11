@@ -52,6 +52,8 @@ ENV_BUNDLES = {
     },
 }
 
+MEMORY = 32
+
 
 class Spawner(object):
 
@@ -79,6 +81,9 @@ class Spawner(object):
 
         # Define spawn type
         self.type = 'sweep' if self.args.sweep else 'fixed'
+
+        # Define the needed memory in GB
+        self.memory = MEMORY
 
         # Write out the boolean arguments (using the 'boolean_flag' function)
         self.bool_args = ['cuda', 'render', 'record', 'layer_norm',
@@ -386,10 +391,10 @@ class Spawner(object):
                                 f"#SBATCH --ntasks={self.args.num_workers}\n"
                                 "#SBATCH --cpus-per-task=1\n"
                                 f"#SBATCH --time={self.duration}\n"
-                                "#SBATCH --mem=32000\n"
+                                f"#SBATCH --mem={self.memory}000\n"
                                 "#SBATCH --output=./out/run_%j.out\n"
                                 '#SBATCH --constraint="V3|V4|V5|V6|V7"\n')  # single quote to escape
-            if self.config['cuda']:
+            if self.config['resources']['cuda']:
                 contraint = "COMPUTE_CAPABILITY_6_0|COMPUTE_CAPABILITY_6_1"
                 bash_script_str += ("#SBATCH --gres=gpu:1\n"
                                     f'#SBATCH --constraint="{contraint}"\n')  # single quote to escape
@@ -398,7 +403,7 @@ class Spawner(object):
             bash_script_str += ("module load GCC/8.3.0 OpenMPI/3.1.4\n")
             if self.config['meta']['benchmark'] == 'd4rl':  # legacy comment: needed for dmc too
                 bash_script_str += ("module load Mesa/19.2.1\n")
-            if self.config['cuda']:
+            if self.config['resources']['cuda']:
                 bash_script_str += ("module load CUDA\n")
             bash_script_str += ('\n')
             # Launch command
