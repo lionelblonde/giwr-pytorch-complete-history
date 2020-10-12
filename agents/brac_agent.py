@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import deque, defaultdict
 import os.path as osp
 
 import numpy as np
@@ -16,6 +16,8 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 ALPHA_DIV_CLAMPS = [0., 500.]
 TARG_DIV = 0.
+
+BC_TRAINING_STEPS_PER_BATCH = 10
 
 
 class BRACAgent(object):
@@ -272,10 +274,35 @@ class BRACAgent(object):
         ac = ac.clip(-self.max_ac, self.max_ac)
         return ac
 
+    def update_behavior_policy_clone(self, batch):
+        """Train the behavior policy."""
+
+        # Transfer to device
+        state = torch.Tensor(batch['obs0']).to(self.device)
+        action = torch.Tensor(batch['acs']).to(self.device)
+
+        bc_loss_deque = deque(maxlen=BC_TRAINING_STEPS_PER_BATCH)
+
+        for _ in range(BC_TRAINING_STEPS_PER_BATCH):
+            action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
+            actr_b_loss = F.mse_loss(action_from_actr_b, action)
+            actr_b_loss += F.mse_loss(self.actr_b.logp(state, action_from_actr_b),
+                                      self.actr_b.logp(state, action))
+            bc_loss_deque.append(actr_b_loss.detach().cpu().numpy())
+
+            self.actr_b_opt.zero_grad()
+            actr_b_loss.backward()
+            average_gradients(self.actr_b, self.device)
+            self.actr_b_opt.step()
+
+        return np.mean(bc_loss_deque)
+
     def update_actor_critic(self, batch, update_actor, iters_so_far):
         """Train the actor and critic networks
         Note, 'update_actor' is here to keep the unified signature.
         """
+
+        # Note, at this point, the behavior policy clone is alreay pre-trained
 
         # Container for all the metrics
         metrics = defaultdict(list)
@@ -293,15 +320,6 @@ class BRACAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
-        # Train the behavioral cloning actor
-        action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
-        actr_b_loss = F.mse_loss(action_from_actr_b, action)
-
-        self.actr_b_opt.zero_grad()
-        actr_b_loss.backward()
-        average_gradients(self.actr_b, self.device)
-        self.actr_b_opt.step()
-
         if update_actor:
 
             # Train the actor
@@ -318,7 +336,8 @@ class BRACAgent(object):
             # In BRAC, the KL considered is KL(policy || behavior policy), so we only need to compute the
             # log prob of the policy (a_) over samples from the policy (_a) and the behavior policy (_b)
             # log_prob_aa is self.actr.logp(state, action_from_actr) (already computed: log_prob)
-            # log_prob_aa is self.actr.logp(state, action_from_actr_b) (already partially computed)
+            # log_prob_aa is self.actr.logp(state, action_from_actr_b) (to be computed)
+            action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
             div = (log_prob - self.actr.logp(state, action_from_actr_b).detach()).mean()
 
             # Only update the policy after a certain number of iteration (BRAC codebase: 20000)

@@ -1,4 +1,5 @@
 import time
+import math
 from copy import copy, deepcopy
 import os
 import os.path as osp
@@ -15,6 +16,8 @@ from helpers.opencv_util import record_video
 
 
 MAXLEN = 40
+
+BRAC_BEHAV_STEPS = 10_000
 
 
 def rollout_generator(env, agent, rollout_len, use_noise_process):
@@ -326,6 +329,17 @@ def learn(args,
             with timed("interacting"):
                 roll_gen.__next__()  # no need to get the returned rollout, stored in buffer
 
+        if args.algo == 'brac' and iters_so_far == 0:
+            with timed('behavior policy pre-training'):
+                # Train the behavior policy estimate in a pre-training phase, as in the BRAC codebase
+                for i in range(BRAC_BEHAV_STEPS):
+                    # Sample a batch of transitions from the replay buffer
+                    batch = agent.sample_batch()
+                    loss = agent.update_behavior_policy_clone(batch=batch)
+                    if i % 10 == 0:
+                        i_fmt = str(i).zfill(math.floor(math.log10(BRAC_BEHAV_STEPS)) + 1)
+                        logger.info(f"bc iter: {i_fmt} | bc loss: {loss}")
+
         with timed('training'):
             for training_step in range(args.training_steps_per_iter):
 
@@ -341,6 +355,7 @@ def learn(args,
 
                 # Sample a batch of transitions from the replay buffer
                 batch = agent.sample_batch()
+
                 # Update the actor and critic
                 metrics, lrnows = agent.update_actor_critic(
                     batch=batch,

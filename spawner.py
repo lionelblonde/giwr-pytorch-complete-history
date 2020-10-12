@@ -30,9 +30,9 @@ ENV_BUNDLES = {
     },
     'd4rl': {
         'debug': ['halfcheetah-medium-v0'],
-        'eevee': ['walker2d-random-v0',
-                  'walker2d-medium-v0',
-                  'walker2d-expert-v0'],
+        'eevee': ['hopper-random-v0',
+                  'hopper-medium-v0',
+                  'hopper-expert-v0'],
         'flareon': ['halfcheetah-random-v0',
                     'halfcheetah-medium-v0',
                     'halfcheetah-expert-v0',
