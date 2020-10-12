@@ -90,7 +90,8 @@ class Spawner(object):
                           'prioritized_replay', 'ranked', 'unreal', 'n_step_returns', 'ret_norm', 'popart',
                           'clipped_double', 'targ_actor_smoothing', 'use_c51', 'use_qr',
                           'offline', 'use_expert_demos', 'state_dependent_std', 'use_adaptive_alpha',
-                          'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen']
+                          'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
+                          'brac_policy_kl_reg', 'cql_deterministic_backup']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -249,6 +250,8 @@ class Spawner(object):
                 'brac_init_temp_log_alpha_ent': self.config.get('brac_init_temp_log_alpha_ent', 0.),
                 'brac_init_temp_log_alpha_div': self.config.get('brac_init_temp_log_alpha_div', 1.),
                 'brac_value_kl_pen': self.config.get('brac_value_kl_pen', True),
+                'brac_policy_kl_reg': self.config.get('brac_policy_kl_reg', False),
+                'cql_deterministic_backup': self.config.get('cql_deterministic_backup', True),
             }
         else:
             # No search, fixed hyper-parameters
@@ -335,8 +338,10 @@ class Spawner(object):
                 'brac_use_adaptive_alpha_ent': self.config.get('brac_use_adaptive_alpha_ent', False),
                 'brac_use_adaptive_alpha_div': self.config.get('brac_use_adaptive_alpha_div', False),
                 'brac_init_temp_log_alpha_ent': self.config.get('brac_init_temp_log_alpha_ent', 0.),
-                'brac_init_temp_log_alpha_div': self.config.get('brac_init_temp_log_alpha_div', 1.),
+                'brac_init_temp_log_alpha_div': self.config.get('brac_init_temp_log_alpha_div', 0.3),
                 'brac_value_kl_pen': self.config.get('brac_value_kl_pen', True),
+                'brac_policy_kl_reg': self.config.get('brac_policy_kl_reg', False),
+                'cql_deterministic_backup': self.config.get('cql_deterministic_backup', True),
             }
 
         # Duplicate for each environment

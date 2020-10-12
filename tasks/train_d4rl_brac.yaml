@@ -15,7 +15,7 @@ save_frequency: 1e5
 num_steps: 5e5
 training_steps_per_iter: 1
 eval_steps_per_iter: 10
-eval_frequency: 10
+eval_frequency: 5e3
 
 # Model
 perception_stack: '"200 200, 300 300"'
@@ -67,14 +67,13 @@ offline: true
 use_expert_demos: false
 sub_rate: 20
 
-state_dependent_std: false
+state_dependent_std: true
 behavior_lr: 3.0e-4
-use_adaptive_alpha: false
 log_alpha_lr: 1.0e-3
-init_temp_log_alpha: 0.3
 warm_start: 20000
-brac_use_adaptive_alpha_ent: true
-brac_use_adaptive_alpha_div: true
+brac_use_adaptive_alpha_ent: false
+brac_use_adaptive_alpha_div: false
 brac_init_temp_log_alpha_ent: 0.
-brac_init_temp_log_alpha_div: 1.
+brac_init_temp_log_alpha_div: 0.3
 brac_value_kl_pen: true
+brac_policy_kl_reg: false

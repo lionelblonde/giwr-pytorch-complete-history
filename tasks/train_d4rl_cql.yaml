@@ -15,7 +15,7 @@ save_frequency: 1e5
 num_steps: 5e5
 training_steps_per_iter: 1
 eval_steps_per_iter: 10
-eval_frequency: 10
+eval_frequency: 5e3
 
 # Model
 perception_stack: '"1024 1024, 1024 1024"'
@@ -68,8 +68,10 @@ offline: true
 use_expert_demos: false
 sub_rate: 20
 
-state_dependent_std: false
+state_dependent_std: true
 use_adaptive_alpha: true
 log_alpha_lr: 1.0e-3
-init_temp_log_alpha: 0.1
+warm_start: 20000
+init_temp_log_alpha: 1.0
 crit_targ_update_freq: 2
+cql_deterministic_backup: true

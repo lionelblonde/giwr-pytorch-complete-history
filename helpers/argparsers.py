@@ -116,5 +116,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--brac_init_temp_log_alpha_ent', type=float, default=0.)
     parser.add_argument('--brac_init_temp_log_alpha_div', type=float, default=1.)
     boolean_flag(parser, 'brac_value_kl_pen', default=True)
+    boolean_flag(parser, 'brac_policy_kl_reg', default=False)
+    boolean_flag(parser, 'cql_deterministic_backup', default=True)
 
     return parser

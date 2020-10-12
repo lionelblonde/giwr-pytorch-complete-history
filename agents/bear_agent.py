@@ -333,7 +333,7 @@ class BEARAgent(object):
 
             self.actr_opt.zero_grad()
             if self.hps.use_adaptive_alpha:
-                actr_loss.backward(retain_graph=True)
+                actr_loss.backward(retain_graph=True)  # double-checked: OK
             else:
                 actr_loss.backward()
             average_gradients(self.actr, self.device)

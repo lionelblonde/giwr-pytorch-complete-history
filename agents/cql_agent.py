@@ -242,8 +242,8 @@ class CQLAgent(object):
 
         def _predict_ac(ob, stride):
             _ob = ob.unsqueeze(1).repeat(1, stride, 1).view(ob.shape[0] * stride, ob.shape[1])
-            _ac = self.actr.sample(_ob, sg=False)
-            _logp = self.actr.logp(_ob, _ac)
+            _ac = actr.sample(_ob, sg=False)
+            _logp = actr.logp(_ob, _ac)
             return _ac, _logp.view(ob.shape[0], stride, 1)
 
         return _predict_ac
@@ -291,12 +291,25 @@ class CQLAgent(object):
                 q_from_actr = (self.hps.ensemble_q_lambda * torch.min(q_from_actr, twin_q_from_actr) +
                                (1. - self.hps.ensemble_q_lambda) * torch.max(q_from_actr, twin_q_from_actr))
 
+            # Only update the policy after a certain number of iteration (CQL codebase: 20000)
+            # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
+            start_using_q = torch.tensor(iters_so_far >= self.hps.warm_start).detach().to(self.device)
+            # Note, unlike in the other algorithms, we do not cast the boolean as float
+
+            # start_using_q = True  # FIXME keep this here until I figure out while a learning step is 10secs
+
             # Actor loss
-            actr_loss = ((self.alpha * log_prob) - q_from_actr).mean()
+            if start_using_q:
+                actr_loss = ((self.alpha * log_prob) - q_from_actr).mean()
+            else:
+                actr_loss = F.smooth_l1_loss(log_prob, self.actr.logp(state, action))
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
-            actr_loss.backward(retain_graph=False)
+            if self.hps.use_adaptive_alpha:
+                actr_loss.backward(retain_graph=True)  # double-checked: OK
+            else:
+                actr_loss.backward()
             average_gradients(self.actr, self.device)
             if self.hps.clip_norm > 0:
                 U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
@@ -308,7 +321,7 @@ class CQLAgent(object):
             if self.hps.use_adaptive_alpha:
                 alpha_loss = (self.log_alpha * (-log_prob - self.targ_ent).detach()).mean()
                 self.log_alpha_opt.zero_grad()
-                alpha_loss.backward(retain_graph=False)
+                alpha_loss.backward()
                 self.log_alpha_opt.step()
                 metrics['alpha_loss'].append(alpha_loss)
 
@@ -327,9 +340,10 @@ class CQLAgent(object):
             q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
                        (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
 
-        # Add the causal entropy regularization term
-        next_log_prob = self.actr.logp(next_state, next_action)
-        q_prime -= self.alpha * next_log_prob
+        if not self.hps.cql_deterministic_backup:
+            # Add the causal entropy regularization term
+            next_log_prob = self.actr.logp(next_state, next_action)
+            q_prime -= self.alpha * next_log_prob
 
         # Assemble the target
         targ_q = (reward +
@@ -379,6 +393,8 @@ class CQLAgent(object):
         if self.hps.clipped_double:
             twin_loss = twin_mse_td_errors.mean()
 
+        logger.info("yo")
+
         # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         # Add CQL contribution (rest is pretty much exactly SAC)
         # Actions and log-probabilities
@@ -393,15 +409,15 @@ class CQLAgent(object):
         # Q-values
         cql_q = self.q_factory(self.crit)(state, cql_ac)
         cql_next_q = self.q_factory(self.crit)(state, cql_next_ac)
-        # XXX: probably wrong -> next state
         cql_rand_q = self.q_factory(self.crit)(state, cql_rand_ac)
         if self.hps.clipped_double:
             cql_twin_q = self.q_factory(self.twin)(state, cql_ac)
             cql_next_twin_q = self.q_factory(self.twin)(state, cql_next_ac)
-            # XXX: probably wrong -> next state
             cql_rand_twin_q = self.q_factory(self.twin)(state, cql_rand_ac)
         # Concatenate
         # dim set to 1 not -1, ensure the size is not 1
+
+        logger.info("yo1")
 
         if min_q_version == 3:
             # Importance-sampled version
@@ -421,7 +437,7 @@ class CQLAgent(object):
                 )
         else:
             cql_cat_q = torch.cat(
-                [q,
+                [q.unsqueeze(1),
                  cql_q,
                  cql_next_q,
                  cql_rand_q],
@@ -429,12 +445,14 @@ class CQLAgent(object):
             )
             if self.hps.clipped_double:
                 cql_cat_twin_q = torch.cat(
-                    [twin_q,
+                    [twin_q.unsqueeze(1),
                      cql_twin_q,
                      cql_next_twin_q,
                      cql_rand_twin_q],
                     dim=1,
                 )
+
+        logger.info("yo2")
 
         # # Compute the standard deviation (only for monitoring purposes)
         # cql_std_q = torch.std(cql_cat_q, dim=1)
@@ -447,9 +465,9 @@ class CQLAgent(object):
             min_twin_loss = torch.logsumexp(cql_cat_twin_q / temperature, dim=1).mean()
             min_twin_loss *= min_q_weight * temperature
 
-        min_crit_loss -= q.mean() * min_q_weight
-        if self.hps.clipped_double:
-            min_twin_loss -= twin_q.mean() * min_q_weight
+        # min_crit_loss -= q.mean() * min_q_weight
+        # if self.hps.clipped_double:
+        #     min_twin_loss -= twin_q.mean() * min_q_weight
 
         # Add the new losses to the vanilla ones
         crit_loss += min_crit_loss
@@ -458,12 +476,21 @@ class CQLAgent(object):
 
         # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
+        logger.info("yo3")
+
         self.crit_opt.zero_grad()
         crit_loss.backward(retain_graph=True)
+        # It is here necessary to retain the graph because the other Q function(s) in the ensemble re-use it
+        # There is an overlap because the dependency graph in cql does not stop at the Q function input,
+        # but goes futher in the actor because of the extra components in the loss of the Q's that contain
+        # actions from the agent at the current and next states. Since these generated actions are
+        # shared by all the Q's in the ensemble, we need to retain the graph after the first backward.
+        # Note, we would not have to do this if we had summed the losses of the Q's of the ensemble,
+        # and optimized it with a single optimizer.
         average_gradients(self.crit, self.device)
         if self.hps.clipped_double:
             self.twin_opt.zero_grad()
-            twin_loss.backward(retain_graph=True)
+            twin_loss.backward()
             average_gradients(self.twin, self.device)
         self.crit_opt.step()
         if self.hps.clipped_double:

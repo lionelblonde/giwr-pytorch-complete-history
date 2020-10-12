@@ -78,6 +78,9 @@ class BRACAgent(object):
         self.actr_b = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr_b)
 
+        # In line with the paper, we do not allow the combination of regularization methods
+        assert not (self.hps.brac_value_kl_pen and self.hps.brac_policy_kl_reg), "can't use both div regs."
+
         self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
         if self.hps.brac_use_adaptive_alpha_ent:
@@ -323,13 +326,14 @@ class BRACAgent(object):
 
             # Actor loss
             actr_loss = ((-q_from_actr * start_using_q.detach()) +
-                         (self.alpha_div * div) +
                          (self.alpha_ent * log_prob)).mean()
+            if self.hps.brac_policy_kl_reg:
+                actr_loss += self.alpha_div * div
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
             if self.hps.brac_use_adaptive_alpha_ent or self.hps.brac_use_adaptive_alpha_div:
-                actr_loss.backward(retain_graph=True)
+                actr_loss.backward(retain_graph=True)  # double-checked: OK
             else:
                 actr_loss.backward()
             average_gradients(self.actr, self.device)
