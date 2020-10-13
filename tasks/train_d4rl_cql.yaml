@@ -15,22 +15,22 @@ save_frequency: 1e5
 num_steps: 5e5
 training_steps_per_iter: 1
 eval_steps_per_iter: 10
-eval_frequency: 5e3
+eval_frequency: 5e2
 
 # Model
-perception_stack: '"1024 1024, 1024 1024"'
+perception_stack: '"256 256, 256 256"'
 layer_norm: true
 
 # Optimization
 actor_lr: 1.0e-4
-critic_lr: 1.0e-3
-lr_schedule: 'linear'
+critic_lr: 3.0e-4
+lr_schedule: 'constant'
 clip_norm: 0.
 wd_scale: 0.
 
 # Algorithm
 rollout_len: 2
-batch_size: 1024
+batch_size: 256
 gamma: 0.99
 mem_size: 1e6
 polyak: 0.005
@@ -68,10 +68,12 @@ offline: true
 use_expert_demos: false
 sub_rate: 20
 
-state_dependent_std: true
-use_adaptive_alpha: true
-log_alpha_lr: 1.0e-3
+state_dependent_std: false
 warm_start: 20000
-init_temp_log_alpha: 1.0
 crit_targ_update_freq: 2
 cql_deterministic_backup: true
+cql_use_adaptive_alpha_ent: true
+cql_use_adaptive_alpha_pri: true
+cql_init_temp_log_alpha_ent: 0.
+cql_init_temp_log_alpha_pri: 0.
+cql_targ_lower_bound: 1.

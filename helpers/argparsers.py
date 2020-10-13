@@ -118,5 +118,10 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'brac_value_kl_pen', default=True)
     boolean_flag(parser, 'brac_policy_kl_reg', default=False)
     boolean_flag(parser, 'cql_deterministic_backup', default=True)
+    boolean_flag(parser, 'cql_use_adaptive_alpha_ent', default=False)
+    boolean_flag(parser, 'cql_use_adaptive_alpha_pri', default=False)
+    parser.add_argument('--cql_init_temp_log_alpha_ent', type=float, default=0.)
+    parser.add_argument('--cql_init_temp_log_alpha_pri', type=float, default=1.)
+    parser.add_argument('--cql_targ_lower_bound', type=float, default=1.)
 
     return parser

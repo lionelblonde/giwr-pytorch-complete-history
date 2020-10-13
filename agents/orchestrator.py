@@ -17,7 +17,7 @@ from helpers.opencv_util import record_video
 
 MAXLEN = 40
 
-BRAC_BEHAV_STEPS = 10_000
+BRAC_BEHAV_STEPS = 2_000
 
 
 def rollout_generator(env, agent, rollout_len, use_noise_process):

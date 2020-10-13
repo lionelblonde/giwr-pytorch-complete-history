@@ -15,16 +15,16 @@ save_frequency: 1e5
 num_steps: 5e5
 training_steps_per_iter: 1
 eval_steps_per_iter: 10
-eval_frequency: 5e3
+eval_frequency: 5e2
 
 # Model
-perception_stack: '"1024 1024, 1024 1024"'
+perception_stack: '"256 256, 256 256"'
 layer_norm: true
 
 # Optimization
-actor_lr: 1.0e-3
-critic_lr: 1.0e-3
-lr_schedule: 'linear'
+actor_lr: 1.0e-4
+critic_lr: 3.0e-4
+lr_schedule: 'constant'
 clip_norm: 0.
 wd_scale: 0.
 
@@ -70,6 +70,6 @@ sub_rate: 20
 
 state_dependent_std: false
 use_adaptive_alpha: true
-log_alpha_lr: 1.0e-3
-init_temp_log_alpha: 1.0e-5
+log_alpha_lr: 3.0e-4
+init_temp_log_alpha: 0.1
 crit_targ_update_freq: 1

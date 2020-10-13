@@ -80,9 +80,6 @@ class BRACAgent(object):
         self.actr_b = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr_b)
 
-        # In line with the paper, we do not allow the combination of regularization methods
-        assert not (self.hps.brac_value_kl_pen and self.hps.brac_policy_kl_reg), "can't use both div regs."
-
         self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
         if self.hps.brac_use_adaptive_alpha_ent:
@@ -329,6 +326,8 @@ class BRACAgent(object):
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
                 q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+                q_from_actr = (self.hps.ensemble_q_lambda * torch.min(q_from_actr, twin_q_from_actr) +
+                               (1. - self.hps.ensemble_q_lambda) * torch.max(q_from_actr, twin_q_from_actr))
 
             # Compute the divergence between the actor and the behavior policy
             # Note, we only care about the KL divergence: best reported results in BRAC
@@ -337,17 +336,16 @@ class BRACAgent(object):
             # log prob of the policy (a_) over samples from the policy (_a) and the behavior policy (_b)
             # log_prob_aa is self.actr.logp(state, action_from_actr) (already computed: log_prob)
             # log_prob_aa is self.actr.logp(state, action_from_actr_b) (to be computed)
-            action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
-            div = (log_prob - self.actr.logp(state, action_from_actr_b).detach()).mean()
+            action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=True)
+            div = (log_prob - self.actr.logp(state, action_from_actr_b)).mean()
 
             # Only update the policy after a certain number of iteration (BRAC codebase: 20000)
             start_using_q = torch.tensor(float(iters_so_far >= self.hps.warm_start)).to(self.device)
 
             # Actor loss
             actr_loss = ((-q_from_actr * start_using_q.detach()) +
+                         (self.alpha_div * div) +
                          (self.alpha_ent * log_prob)).mean()
-            if self.hps.brac_policy_kl_reg:
-                actr_loss += self.alpha_div * div
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
@@ -402,7 +400,8 @@ class BRACAgent(object):
             # Add value penalty regularizater
             next_action_from_actr_b = float(self.max_ac) * self.actr_b.sample(next_state, sg=True)
             next_log_prob_from_actr_b = self.actr.logp(next_state, next_action_from_actr_b)
-            q_prime -= self.alpha_div * (next_log_prob - next_log_prob_from_actr_b).mean()
+            div = (next_log_prob - next_log_prob_from_actr_b).mean()
+            q_prime -= self.alpha_div * div
 
         # Assemble the target
         targ_q = (reward +
