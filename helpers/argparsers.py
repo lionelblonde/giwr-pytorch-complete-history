@@ -20,7 +20,8 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)
     parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq',
-                                                     'bear', 'brac', 'cql'], default=None)
+                                                     'bear', 'brac', 'cql',
+                                                     'ptso'], default=None)
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',

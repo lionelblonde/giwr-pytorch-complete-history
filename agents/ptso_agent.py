@@ -17,7 +17,7 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 
 
-class CQLAgent(object):
+class PTSOAgent(object):
 
     def __init__(self, env, device, hps, to_load_in_memory):
         self.env = env
@@ -62,16 +62,16 @@ class CQLAgent(object):
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
 
-        self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
+        self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
         sync_with_root(self.crit)
-        self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
+        self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
+            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
@@ -270,7 +270,8 @@ class CQLAgent(object):
         num_repeat = int(ac_dim / ob_dim)
         _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
         q = crit.QZ(_ob, ac).view(ob.shape[0], num_repeat, 1)
-        return q
+        u = crit.g_U(_ob, ac).view(ob.shape[0], num_repeat, 1)
+        return q, u
 
     def update_actor_critic(self, batch, update_actor, iters_so_far):
         """Train the actor and critic networks
@@ -416,11 +417,11 @@ class CQLAgent(object):
         # Q-values
         cql_q = self.q_factory(self.crit, state, cql_ac)
         cql_next_q = self.q_factory(self.crit, state, cql_next_ac)
-        cql_rand_q = self.q_factory(self.crit, state, cql_rand_ac)
+        cql_rand_q, cql_rand_u = self.q_factory(self.crit, state, cql_rand_ac)
         if self.hps.clipped_double:
             cql_twin_q = self.q_factory(self.twin, state, cql_ac)
             cql_next_twin_q = self.q_factory(self.twin, state, cql_next_ac)
-            cql_rand_twin_q = self.q_factory(self.twin, state, cql_rand_ac)
+            cql_rand_twin_q, cql_rand_twin_u = self.q_factory(self.twin, state, cql_rand_ac)
 
         # Concatenate every Q-values estimates into one big vector that we'll later try to shrink
         # The answer to "why are so many Q-values are evaluated here?" is:
@@ -430,15 +431,15 @@ class CQLAgent(object):
             # Importance-sampled version
             weird_stuff = np.log(0.5 ** cql_rand_ac.shape[-1])
             cql_cat_q = torch.cat([
-                cql_rand_q - weird_stuff,
-                cql_next_q - cql_next_logp.detach(),
-                cql_q - cql_logp.detach(),
+                cql_rand_q - weird_stuff + cql_rand_u,
+                # cql_next_q - cql_next_logp.detach(),
+                # cql_q - cql_logp.detach(),
             ], dim=1)
             if self.hps.clipped_double:
                 cql_cat_twin_q = torch.cat([
-                    cql_rand_twin_q - weird_stuff,
-                    cql_next_twin_q - cql_next_logp.detach(),
-                    cql_twin_q - cql_logp.detach(),
+                    cql_rand_twin_q - weird_stuff + cql_rand_twin_u,
+                    # cql_next_twin_q - cql_next_logp.detach(),
+                    # cql_twin_q - cql_logp.detach(),
                 ], dim=1)
         else:
             cql_cat_q = torch.cat([
@@ -457,7 +458,8 @@ class CQLAgent(object):
         # weirdly, the version 3 does not use the stock Q networks, but no questions asked for now
 
         # Assemble the 3 pieces of the CQL loss
-        # (cf. slide 16 in: https://docs.google.com/presentation/d/1F-dNg2LT75z9vJiPqASHayiZ3ewB6HE0KPgnZnY2rTg/edit#slide=id.g80c29cc4d2_0_101)
+        # (cf. slide 16 in: https://docs.google.com/presentation/d/
+        # 1F-dNg2LT75z9vJiPqASHayiZ3ewB6HE0KPgnZnY2rTg/edit#slide=id.g80c29cc4d2_0_101)
 
         # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
         # will be the first to be shrinked)
@@ -468,9 +470,9 @@ class CQLAgent(object):
                              MIN_Q_WEIGHT * TEMPERATURE)
 
         # Piece #2: maximize the Q-function on points in the offline dataset
-        min_crit_loss -= q.mean() * MIN_Q_WEIGHT
+        min_crit_loss -= (q - self.crit.g_U(state, action)).mean() * MIN_Q_WEIGHT
         if self.hps.clipped_double:
-            min_twin_loss -= twin_q.mean() * MIN_Q_WEIGHT
+            min_twin_loss -= (twin_q - self.twin.g_U(state, action)).mean() * MIN_Q_WEIGHT
 
         if self.hps.cql_use_adaptive_alpha_pri:
             min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)
@@ -490,6 +492,29 @@ class CQLAgent(object):
         crit_loss += min_crit_loss
         if self.hps.clipped_double:
             twin_loss += min_twin_loss
+
+        # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+        # The target of the Uncertainty Bellman Equation is the variance estimate of the error epsilon (paper)
+        assert not self.hps.n_step_returns
+        mat = self.targ_crit.sg_qfeat(next_state, next_action).unsqueeze(-1)
+        targ_u = (torch.bmm(torch.transpose(mat, -1, -2), mat).squeeze(-1) +
+                  ((self.hps.gamma ** 2) * self.targ_crit.U(next_state, next_action)))
+        if self.hps.clipped_double:
+            mat_twin = self.targ_twin.sg_qfeat(next_state, next_action).unsqueeze(-1)
+            targ_u_twin = (torch.bmm(torch.transpose(mat_twin, -1, -2), mat_twin).squeeze(-1) +
+                           ((self.hps.gamma ** 2) * self.targ_twin.U(next_state, next_action)))
+            targ_u = torch.min(targ_u, targ_u_twin)
+
+        u_crit_loss = F.mse_loss(self.crit.U(state, action), targ_u.detach())
+        if self.hps.clipped_double:
+            u_twin_loss = F.mse_loss(self.twin.U(state, action), targ_u.detach())
+
+        crit_loss += u_crit_loss
+        if self.hps.clipped_double:
+            twin_loss += u_twin_loss
+
+        # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
         self.crit_opt.zero_grad()
         crit_loss.backward(retain_graph=True)

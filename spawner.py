@@ -33,7 +33,7 @@ ENV_BUNDLES = {
         'eevee': ['hopper-random-v0',
                   'hopper-medium-v0',
                   'hopper-expert-v0'],
-        'flareon': ['halfcheetah-random-v0',
+        'umbreon': ['halfcheetah-random-v0',
                     'halfcheetah-medium-v0',
                     'halfcheetah-expert-v0',
                     'halfcheetah-medium-replay-v0',

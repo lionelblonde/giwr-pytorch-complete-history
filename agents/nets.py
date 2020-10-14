@@ -100,7 +100,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
 
-    def __init__(self, env, hps, rms_obs, hidden_dims):
+    def __init__(self, env, hps, rms_obs, hidden_dims, ube=False):
         super(Critic, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -131,17 +131,36 @@ class Critic(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.head.apply(init(weight_scale=0.01))
 
+        if ube:
+            self.u_head = nn.Linear(hidden_dims[1], 1)
+            # Perform initialization
+            self.u_head.apply(init(weight_scale=0.01))
+
+    def sg_qfeat(self, ob, ac):
+        return self.forward(ob, ac).detach()
+
     def QZ(self, ob, ac):
-        return self.forward(ob, ac)
+        x = self.forward(ob, ac)
+        x = self.head(x)
+        if self.hps.use_c51:
+            # Return a categorical distribution
+            x = F.log_softmax(x, dim=1).exp()
+        return x
+
+    def U(self, ob, ac):
+        x = self.sg_qfeat(ob, ac)  # as per the UBE paper, U cannot update the trunk
+        x = self.u_head(x)
+        return x
+
+    def g_U(self, ob, ac):
+        x = self.forward(ob, ac)  # with grads
+        x = self.u_head(x)
+        return x
 
     def forward(self, ob, ac):
         ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
-        x = self.head(x)
-        if self.hps.use_c51:
-            # Return a categorical distribution
-            x = F.log_softmax(x, dim=1).exp()
         return x
 
     @property

@@ -19,6 +19,7 @@ from agents.bcq_agent import BCQAgent
 from agents.bear_agent import BEARAgent
 from agents.brac_agent import BRACAgent
 from agents.cql_agent import CQLAgent
+from agents.ptso_agent import PTSOAgent
 from helpers import h5_util as H
 
 
@@ -180,6 +181,17 @@ def train(args):
     elif args.algo == 'cql':
         def agent_wrapper():
             return CQLAgent(
+                env=env,
+                device=device,
+                hps=args,
+                to_load_in_memory=to_load_in_memory,
+            )
+
+        assert args.offline
+
+    elif args.algo == 'ptso':
+        def agent_wrapper():
+            return PTSOAgent(
                 env=env,
                 device=device,
                 hps=args,
