@@ -136,8 +136,8 @@ class Critic(nn.Module):
             # Perform initialization
             self.u_head.apply(init(weight_scale=0.01))
 
-    def sg_qfeat(self, ob, ac):
-        return self.forward(ob, ac).detach()
+    def phi(self, ob, ac):
+        return self.forward(ob, ac)
 
     def QZ(self, ob, ac):
         x = self.forward(ob, ac)
@@ -147,15 +147,11 @@ class Critic(nn.Module):
             x = F.log_softmax(x, dim=1).exp()
         return x
 
-    def U(self, ob, ac):
-        x = self.sg_qfeat(ob, ac)  # as per the UBE paper, U cannot update the trunk
-        x = self.u_head(x)
-        return x
+    def wrap_with_u_head(self, x):
+        return self.u_head(x)
 
-    def g_U(self, ob, ac):
-        x = self.forward(ob, ac)  # with grads
-        x = self.u_head(x)
-        return x
+    def wrap_with_q_head(self, x):
+        return self.head(x)
 
     def forward(self, ob, ac):
         ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)

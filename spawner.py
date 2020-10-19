@@ -33,6 +33,12 @@ ENV_BUNDLES = {
         'eevee': ['hopper-random-v0',
                   'hopper-medium-v0',
                   'hopper-expert-v0'],
+        'glaceon': ['halfcheetah-random-v0',
+                    'halfcheetah-medium-v0',
+                    'halfcheetah-expert-v0',
+                    'walker2d-random-v0',
+                    'walker2d-medium-v0',
+                    'walker2d-expert-v0'],
         'umbreon': ['halfcheetah-random-v0',
                     'halfcheetah-medium-v0',
                     'halfcheetah-expert-v0',
@@ -92,7 +98,7 @@ class Spawner(object):
                           'offline', 'use_expert_demos', 'state_dependent_std', 'use_adaptive_alpha',
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
-                          'cql_use_adaptive_alpha_pri']
+                          'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -257,7 +263,11 @@ class Spawner(object):
                 'cql_init_temp_log_alpha_ent': self.config.get('cql_init_temp_log_alpha_ent', 0.),
                 'cql_init_temp_log_alpha_pri': self.config.get('cql_init_temp_log_alpha_pri', 1.),
                 'cql_targ_lower_bound': self.config.get('cql_targ_lower_bound', 1.),
-
+                'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
+                'cql_state_inflate': self.config.get('cql_state_inflate', 10),
+                'cql_use_version_3': self.config.get('cql_use_version_3', True),
+                'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
+                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', True),
             }
         else:
             # No search, fixed hyper-parameters
@@ -352,6 +362,11 @@ class Spawner(object):
                 'cql_init_temp_log_alpha_ent': self.config.get('cql_init_temp_log_alpha_ent', 0.),
                 'cql_init_temp_log_alpha_pri': self.config.get('cql_init_temp_log_alpha_pri', 1.),
                 'cql_targ_lower_bound': self.config.get('cql_targ_lower_bound', 1.),
+                'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
+                'cql_state_inflate': self.config.get('cql_state_inflate', 10),
+                'cql_use_version_3': self.config.get('cql_use_version_3', True),
+                'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
+                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', True),
             }
 
         # Duplicate for each environment

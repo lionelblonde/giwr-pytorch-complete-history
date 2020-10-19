@@ -23,7 +23,7 @@ layer_norm: true
 
 # Optimization
 actor_lr: 1.0e-4
-critic_lr: 3.0e-4
+critic_lr: 1.0e-3
 lr_schedule: 'constant'
 clip_norm: 0.
 wd_scale: 0.
@@ -68,12 +68,17 @@ offline: true
 use_expert_demos: false
 sub_rate: 20
 
-state_dependent_std: false
-warm_start: 20000
-crit_targ_update_freq: 2
+state_dependent_std: true
+warm_start: 2000
+crit_targ_update_freq: 1
 cql_deterministic_backup: true
 cql_use_adaptive_alpha_ent: true
 cql_use_adaptive_alpha_pri: true
 cql_init_temp_log_alpha_ent: 0.
 cql_init_temp_log_alpha_pri: 0.
 cql_targ_lower_bound: 1.
+cql_min_q_weight: 5.
+cql_state_inflate: 10
+cql_use_version_3: true
+ptso_u_scale: 1.
+ptso_use_targ_for_u: false

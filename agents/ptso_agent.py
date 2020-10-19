@@ -15,6 +15,7 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
+TEMPERATURE = 1.0
 
 
 class PTSOAgent(object):
@@ -91,6 +92,9 @@ class PTSOAgent(object):
 
         # Set target entropy to minus action dimension
         self.targ_ent = -self.ac_dim
+
+        # Initialize the precision matrix
+        self.precision = torch.eye(hidden_dims[1][-1])
 
         # Set up replay buffer
         shapes = {
@@ -258,20 +262,19 @@ class PTSOAgent(object):
         ac = ac.clip(-self.max_ac, self.max_ac)
         return ac
 
-    def ac_factory(self, actr, ob, stride):
-        _ob = ob.unsqueeze(1).repeat(1, stride, 1).view(ob.shape[0] * stride, ob.shape[1])
+    def ac_factory(self, actr, ob, inflate):
+        _ob = ob.unsqueeze(1).repeat(1, inflate, 1).view(ob.shape[0] * inflate, ob.shape[1])
         _ac = actr.sample(_ob, sg=False)
         _logp = actr.logp(_ob, _ac)
-        return _ac, _logp.view(ob.shape[0], stride, 1)
+        return _ac, _logp.view(ob.shape[0], inflate, 1)
 
     def q_factory(self, crit, ob, ac):
         ob_dim = ob.shape[0]
         ac_dim = ac.shape[0]
         num_repeat = int(ac_dim / ob_dim)
         _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
-        q = crit.QZ(_ob, ac).view(ob.shape[0], num_repeat, 1)
-        u = crit.g_U(_ob, ac).view(ob.shape[0], num_repeat, 1)
-        return q, u
+        q = crit.wrap_with_q_head(crit.phi(_ob, ac)).view(ob.shape[0], num_repeat, 1)
+        return q
 
     def update_actor_critic(self, batch, update_actor, iters_so_far):
         """Train the actor and critic networks
@@ -310,7 +313,9 @@ class PTSOAgent(object):
 
             # Actor loss
             if start_using_q:
-                actr_loss = ((self.alpha_ent * log_prob) - q_from_actr).mean()
+                actr_loss = ((self.alpha_ent * log_prob) - q_from_actr +
+                             (self.hps.ptso_u_scale *
+                              self.crit.wrap_with_u_head(self.crit.phi(state, action)).sqrt())).mean()
             else:
                 actr_loss = F.mse_loss(log_prob, self.actr.logp(state, action))
             metrics['actr_loss'].append(actr_loss)
@@ -405,41 +410,36 @@ class PTSOAgent(object):
 
         # Add CQL contribution (rest is pretty much exactly SAC)
         # Actions and log-probabilities
-        STRIDE = 10
-        TEMPERATURE = 1.0
-        MIN_Q_WEIGHT = 5.0  # or 10.0 apparently: https://github.com/aviralkumar2907/CQL
-        USE_VERSION_3 = True
-
-        cql_ac, cql_logp = self.ac_factory(self.actr, state, STRIDE)
-        cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, stride=STRIDE)
-        cql_rand_ac = torch.Tensor(self.hps.batch_size * STRIDE,
+        cql_ac, cql_logp = self.ac_factory(self.actr, state, self.hps.cql_state_inflate)
+        cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, self.hps.cql_state_inflate)
+        cql_rand_ac = torch.Tensor(self.hps.batch_size * self.hps.cql_state_inflate,
                                    self.ac_dim).uniform_(-self.max_ac, self.max_ac).to(self.device)
         # Q-values
         cql_q = self.q_factory(self.crit, state, cql_ac)
         cql_next_q = self.q_factory(self.crit, state, cql_next_ac)
-        cql_rand_q, cql_rand_u = self.q_factory(self.crit, state, cql_rand_ac)
+        cql_rand_q = self.q_factory(self.crit, state, cql_rand_ac)
         if self.hps.clipped_double:
             cql_twin_q = self.q_factory(self.twin, state, cql_ac)
             cql_next_twin_q = self.q_factory(self.twin, state, cql_next_ac)
-            cql_rand_twin_q, cql_rand_twin_u = self.q_factory(self.twin, state, cql_rand_ac)
+            cql_rand_twin_q = self.q_factory(self.twin, state, cql_rand_ac)
 
         # Concatenate every Q-values estimates into one big vector that we'll later try to shrink
         # The answer to "why are so many Q-values are evaluated here?" is:
         # "we want to cover the maximum amount of ground, so we consider all the Q-values we can afford."
         # Note, `dim` is set to 1 not -1, ensure the size is not 1
-        if USE_VERSION_3:
+        if self.hps.cql_use_version_3:
             # Importance-sampled version
             weird_stuff = np.log(0.5 ** cql_rand_ac.shape[-1])
             cql_cat_q = torch.cat([
-                cql_rand_q - weird_stuff + cql_rand_u,
-                # cql_next_q - cql_next_logp.detach(),
-                # cql_q - cql_logp.detach(),
+                cql_rand_q - weird_stuff,
+                cql_next_q - cql_next_logp.detach(),
+                cql_q - cql_logp.detach(),
             ], dim=1)
             if self.hps.clipped_double:
                 cql_cat_twin_q = torch.cat([
-                    cql_rand_twin_q - weird_stuff + cql_rand_twin_u,
-                    # cql_next_twin_q - cql_next_logp.detach(),
-                    # cql_twin_q - cql_logp.detach(),
+                    cql_rand_twin_q - weird_stuff,
+                    cql_next_twin_q - cql_next_logp.detach(),
+                    cql_twin_q - cql_logp.detach(),
                 ], dim=1)
         else:
             cql_cat_q = torch.cat([
@@ -464,15 +464,15 @@ class PTSOAgent(object):
         # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
         # will be the first to be shrinked)
         min_crit_loss = (torch.logsumexp(cql_cat_q / TEMPERATURE, dim=1).mean() *
-                         MIN_Q_WEIGHT * TEMPERATURE)
+                         self.hps.cql_min_q_weight * TEMPERATURE)
         if self.hps.clipped_double:
             min_twin_loss = (torch.logsumexp(cql_cat_twin_q / TEMPERATURE, dim=1).mean() *
-                             MIN_Q_WEIGHT * TEMPERATURE)
+                             self.hps.cql_min_q_weight * TEMPERATURE)
 
         # Piece #2: maximize the Q-function on points in the offline dataset
-        min_crit_loss -= (q - self.crit.g_U(state, action)).mean() * MIN_Q_WEIGHT
+        min_crit_loss -= q.mean() * self.hps.cql_min_q_weight
         if self.hps.clipped_double:
-            min_twin_loss -= (twin_q - self.twin.g_U(state, action)).mean() * MIN_Q_WEIGHT
+            min_twin_loss -= twin_q.mean() * self.hps.cql_min_q_weight
 
         if self.hps.cql_use_adaptive_alpha_pri:
             min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)
@@ -497,18 +497,58 @@ class PTSOAgent(object):
 
         # The target of the Uncertainty Bellman Equation is the variance estimate of the error epsilon (paper)
         assert not self.hps.n_step_returns
-        mat = self.targ_crit.sg_qfeat(next_state, next_action).unsqueeze(-1)
-        targ_u = (torch.bmm(torch.transpose(mat, -1, -2), mat).squeeze(-1) +
-                  ((self.hps.gamma ** 2) * self.targ_crit.U(next_state, next_action)))
+
+        # Depending on a hyper-parameter, use the target critics in `targ_u` calculation, or not at all here
+        if self.hps.ptso_use_targ_for_u:
+            _crit = self.targ_crit
+            if self.hps.clipped_double:
+                _twin = self.targ_twin
+        else:
+            _crit = self.crit
+            if self.hps.clipped_double:
+                _twin = self.twin
+
+        # Update the global uncertainty matrix (sigma in UBE, the covariance matrix) according to equation 14 in UBE
+        # Computations done without the batch dimension (non-batchable iterative process)
+        new_phi = _crit.phi(next_state, next_action).detach()  # shape: batch size x last hidden dim
+        for i in range(self.hps.batch_size):
+            _new_phi = new_phi[i, :].unsqueeze(-1)
+            _new_phi_t = torch.transpose(_new_phi, -1, -2)
+            denom = (torch.matmul(torch.matmul(_new_phi_t,
+                                               self.precision),
+                                  _new_phi)
+                     + 1.).squeeze()  # scalar
+            numer = torch.matmul(torch.matmul(torch.matmul(self.precision,
+                                                           _new_phi),
+                                              _new_phi_t),
+                                 self.precision)
+            self.precision -= (numer / denom)
+
+        # Create the UBE target
+        # Computations done with batch dimension
+        _new_phi = new_phi.unsqueeze(-1)
+        _new_phi_t = torch.transpose(_new_phi, -1, -2)
+        inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
+        targ_u = torch.bmm(torch.bmm(_new_phi_t,
+                                     inflated_precision),
+                           _new_phi).squeeze(-1)
+        targ_u += ((self.hps.gamma ** 2) *
+                   (1. - done) *
+                   _crit.wrap_with_u_head(new_phi))
         if self.hps.clipped_double:
-            mat_twin = self.targ_twin.sg_qfeat(next_state, next_action).unsqueeze(-1)
-            targ_u_twin = (torch.bmm(torch.transpose(mat_twin, -1, -2), mat_twin).squeeze(-1) +
-                           ((self.hps.gamma ** 2) * self.targ_twin.U(next_state, next_action)))
+            _new_phi = _twin.phi(next_state, next_action).detach().unsqueeze(-1)
+            _new_phi_t = torch.transpose(_new_phi, -1, -2)
+            targ_u_twin = torch.bmm(torch.bmm(_new_phi_t,
+                                              inflated_precision),
+                                    _new_phi).squeeze(-1)
+            targ_u_twin += ((self.hps.gamma ** 2) *
+                            (1. - done) *
+                            _twin.wrap_with_u_head(new_phi))
             targ_u = torch.min(targ_u, targ_u_twin)
 
-        u_crit_loss = F.mse_loss(self.crit.U(state, action), targ_u.detach())
+        u_crit_loss = F.mse_loss(self.crit.wrap_with_u_head(self.crit.phi(state, action)), targ_u.detach())
         if self.hps.clipped_double:
-            u_twin_loss = F.mse_loss(self.twin.U(state, action), targ_u.detach())
+            u_twin_loss = F.mse_loss(self.twin.wrap_with_u_head(self.twin.phi(state, action)), targ_u.detach())
 
         crit_loss += u_crit_loss
         if self.hps.clipped_double:

@@ -15,6 +15,7 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
+TEMPERATURE = 1.0
 
 
 class CQLAgent(object):
@@ -258,11 +259,11 @@ class CQLAgent(object):
         ac = ac.clip(-self.max_ac, self.max_ac)
         return ac
 
-    def ac_factory(self, actr, ob, stride):
-        _ob = ob.unsqueeze(1).repeat(1, stride, 1).view(ob.shape[0] * stride, ob.shape[1])
+    def ac_factory(self, actr, ob, inflate):
+        _ob = ob.unsqueeze(1).repeat(1, inflate, 1).view(ob.shape[0] * inflate, ob.shape[1])
         _ac = actr.sample(_ob, sg=False)
         _logp = actr.logp(_ob, _ac)
-        return _ac, _logp.view(ob.shape[0], stride, 1)
+        return _ac, _logp.view(ob.shape[0], inflate, 1)
 
     def q_factory(self, crit, ob, ac):
         ob_dim = ob.shape[0]
@@ -404,14 +405,9 @@ class CQLAgent(object):
 
         # Add CQL contribution (rest is pretty much exactly SAC)
         # Actions and log-probabilities
-        STRIDE = 10
-        TEMPERATURE = 1.0
-        MIN_Q_WEIGHT = 5.0  # or 10.0 apparently: https://github.com/aviralkumar2907/CQL
-        USE_VERSION_3 = True
-
-        cql_ac, cql_logp = self.ac_factory(self.actr, state, STRIDE)
-        cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, stride=STRIDE)
-        cql_rand_ac = torch.Tensor(self.hps.batch_size * STRIDE,
+        cql_ac, cql_logp = self.ac_factory(self.actr, state, self.hps.cql_state_inflate)
+        cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, self.hps.cql_state_inflate)
+        cql_rand_ac = torch.Tensor(self.hps.batch_size * self.hps.cql_state_inflate,
                                    self.ac_dim).uniform_(-self.max_ac, self.max_ac).to(self.device)
         # Q-values
         cql_q = self.q_factory(self.crit, state, cql_ac)
@@ -426,7 +422,7 @@ class CQLAgent(object):
         # The answer to "why are so many Q-values are evaluated here?" is:
         # "we want to cover the maximum amount of ground, so we consider all the Q-values we can afford."
         # Note, `dim` is set to 1 not -1, ensure the size is not 1
-        if USE_VERSION_3:
+        if self.hps.cql_use_version_3:
             # Importance-sampled version
             weird_stuff = np.log(0.5 ** cql_rand_ac.shape[-1])
             cql_cat_q = torch.cat([
@@ -457,20 +453,21 @@ class CQLAgent(object):
         # weirdly, the version 3 does not use the stock Q networks, but no questions asked for now
 
         # Assemble the 3 pieces of the CQL loss
-        # (cf. slide 16 in: https://docs.google.com/presentation/d/1F-dNg2LT75z9vJiPqASHayiZ3ewB6HE0KPgnZnY2rTg/edit#slide=id.g80c29cc4d2_0_101)
+        # (cf. slide 16 in: https://docs.google.com/presentation/d/
+        # 1F-dNg2LT75z9vJiPqASHayiZ3ewB6HE0KPgnZnY2rTg/edit#slide=id.g80c29cc4d2_0_101)
 
         # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
         # will be the first to be shrinked)
         min_crit_loss = (torch.logsumexp(cql_cat_q / TEMPERATURE, dim=1).mean() *
-                         MIN_Q_WEIGHT * TEMPERATURE)
+                         self.hps.cql_min_q_weight * TEMPERATURE)
         if self.hps.clipped_double:
             min_twin_loss = (torch.logsumexp(cql_cat_twin_q / TEMPERATURE, dim=1).mean() *
-                             MIN_Q_WEIGHT * TEMPERATURE)
+                             self.hps.cql_min_q_weight * TEMPERATURE)
 
         # Piece #2: maximize the Q-function on points in the offline dataset
-        min_crit_loss -= q.mean() * MIN_Q_WEIGHT
+        min_crit_loss -= q.mean() * self.hps.cql_min_q_weight
         if self.hps.clipped_double:
-            min_twin_loss -= twin_q.mean() * MIN_Q_WEIGHT
+            min_twin_loss -= twin_q.mean() * self.hps.cql_min_q_weight
 
         if self.hps.cql_use_adaptive_alpha_pri:
             min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)

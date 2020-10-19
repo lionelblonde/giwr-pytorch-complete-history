@@ -107,7 +107,7 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'use_adaptive_alpha', default=False)
     parser.add_argument('--log_alpha_lr', type=float, default=1e-3)
     parser.add_argument('--init_temp_log_alpha', type=float, default=0.1)
-    parser.add_argument('--crit_targ_update_freq', type=int, default=2)
+    parser.add_argument('--crit_targ_update_freq', type=int, default=1)
     parser.add_argument('--warm_start', type=int, default=20000)
     parser.add_argument('--bear_mmd_kernel', type=str, choices=['laplacian', 'gaussian'], default='laplacian')
     parser.add_argument('--bear_mmd_sigma', type=float, default=20.)
@@ -124,5 +124,11 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--cql_init_temp_log_alpha_ent', type=float, default=0.)
     parser.add_argument('--cql_init_temp_log_alpha_pri', type=float, default=1.)
     parser.add_argument('--cql_targ_lower_bound', type=float, default=1.)
+    parser.add_argument('--cql_min_q_weight', type=float, default=5.)
+    parser.add_argument('--cql_state_inflate', type=int, default=10)
+    boolean_flag(parser, 'cql_use_version_3', default=True)
+
+    parser.add_argument('--ptso_u_scale', type=float, default=1.)
+    boolean_flag(parser, 'ptso_use_targ_for_u', default=True)
 
     return parser
