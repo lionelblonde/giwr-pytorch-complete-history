@@ -103,5 +103,6 @@ class ExperimentInitializer:
             name += "gen_buffer_size_{}.".format(self.args.gen_buffer_size)
             name += "model_{}.".format(self.uuid.split('.')[0])
         name += self.args.env_id
+        name += '.' + self.args.algo
         name += ".seed{}".format(str(self.args.seed).zfill(2))
         return name

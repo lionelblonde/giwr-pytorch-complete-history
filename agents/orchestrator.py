@@ -329,7 +329,7 @@ def learn(args,
             with timed("interacting"):
                 roll_gen.__next__()  # no need to get the returned rollout, stored in buffer
 
-        if args.algo == 'brac' and iters_so_far == 0:
+        if args.algo.split('_')[0] == 'brac' and iters_so_far == 0:
             with timed('behavior policy pre-training'):
                 # Train the behavior policy estimate in a pre-training phase, as in the BRAC codebase
                 for i in range(BRAC_BEHAV_STEPS):

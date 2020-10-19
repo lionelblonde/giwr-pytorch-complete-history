@@ -31,6 +31,8 @@ def train(args):
     rank = comm.Get_rank()
     world_size = comm.Get_size()
 
+    args.algo = args.algo + '_' + str(world_size).zfill(3)
+
     torch.set_num_threads(1)
 
     # Initialize and configure experiment
@@ -127,7 +129,7 @@ def train(args):
         to_load_in_memory = None
 
     # Create an agent wrapper
-    if args.algo == 'ddpg':
+    if args.algo.split('_')[0] == 'ddpg':
         def agent_wrapper():
             return DDPGAgent(
                 env=env,
@@ -136,7 +138,7 @@ def train(args):
                 to_load_in_memory=to_load_in_memory,
             )
 
-    elif args.algo == 'sac':
+    elif args.algo.split('_')[0] == 'sac':
         def agent_wrapper():
             return SACAgent(
                 env=env,
@@ -145,7 +147,7 @@ def train(args):
                 to_load_in_memory=to_load_in_memory,
             )
 
-    elif args.algo == 'bcq':
+    elif args.algo.split('_')[0] == 'bcq':
         def agent_wrapper():
             return BCQAgent(
                 env=env,
@@ -156,7 +158,7 @@ def train(args):
 
         assert args.offline
 
-    elif args.algo == 'bear':
+    elif args.algo.split('_')[0] == 'bear':
         def agent_wrapper():
             return BEARAgent(
                 env=env,
@@ -167,7 +169,7 @@ def train(args):
 
         assert args.offline
 
-    elif args.algo == 'brac':
+    elif args.algo.split('_')[0] == 'brac':
         def agent_wrapper():
             return BRACAgent(
                 env=env,
@@ -178,7 +180,7 @@ def train(args):
 
         assert args.offline
 
-    elif args.algo == 'cql':
+    elif args.algo.split('_')[0] == 'cql':
         def agent_wrapper():
             return CQLAgent(
                 env=env,
@@ -189,7 +191,7 @@ def train(args):
 
         assert args.offline
 
-    elif args.algo == 'ptso':
+    elif args.algo.split('_')[0] == 'ptso':
         def agent_wrapper():
             return PTSOAgent(
                 env=env,

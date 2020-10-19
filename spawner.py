@@ -134,7 +134,7 @@ class Spawner(object):
         except OSError:
             pass
 
-        uuid = f"{hpmap['uuid']}.{gitsha}.{hpmap['env_id']}"
+        uuid = f"{hpmap['uuid']}.{gitsha}.{hpmap['env_id']}.{hpmap['algo']}_{self.args.num_workers}"
         if self.need_demos:
             uuid += f".demos{str(hpmap['num_demos']).zfill(3)}"
         uuid += f".seed{str(seed).zfill(2)}"
