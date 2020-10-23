@@ -103,6 +103,8 @@ class ExperimentInitializer:
             name += "gen_buffer_size_{}.".format(self.args.gen_buffer_size)
             name += "model_{}.".format(self.uuid.split('.')[0])
         name += self.args.env_id
-        name += '.' + self.args.algo
+        name += f".{self.args.algo}"
+        if self.args.task == 'train':
+            name += f"_{self.world_size}"
         name += ".seed{}".format(str(self.args.seed).zfill(2))
         return name

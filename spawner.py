@@ -39,6 +39,15 @@ ENV_BUNDLES = {
                     'walker2d-random-v0',
                     'walker2d-medium-v0',
                     'walker2d-expert-v0'],
+        'flareon': ['hopper-random-v0',
+                    'hopper-medium-v0',
+                    'hopper-expert-v0',
+                    'halfcheetah-random-v0',
+                    'halfcheetah-medium-v0',
+                    'halfcheetah-expert-v0',
+                    'walker2d-random-v0',
+                    'walker2d-medium-v0',
+                    'walker2d-expert-v0'],
         'umbreon': ['halfcheetah-random-v0',
                     'halfcheetah-medium-v0',
                     'halfcheetah-expert-v0',
@@ -58,7 +67,7 @@ ENV_BUNDLES = {
     },
 }
 
-MEMORY = 32
+MEMORY = 16
 
 
 class Spawner(object):
@@ -266,8 +275,10 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
                 'cql_use_version_3': self.config.get('cql_use_version_3', True),
+
                 'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
-                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', True),
+                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
+                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 10),
             }
         else:
             # No search, fixed hyper-parameters
@@ -365,8 +376,10 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
                 'cql_use_version_3': self.config.get('cql_use_version_3', True),
+
                 'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
-                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', True),
+                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
+                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 10),
             }
 
         # Duplicate for each environment

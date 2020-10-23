@@ -240,12 +240,12 @@ def learn(args,
     timesteps_so_far = 0
     tstart = time.time()
 
-    # Create collections
-    d = defaultdict(list)
-    main_eval_deque = deque(maxlen=MAXLEN)
-    maxq_eval_deque = deque(maxlen=MAXLEN)
-
     if rank == 0:
+        # Create collections
+        d = defaultdict(list)
+        main_eval_deque = deque(maxlen=MAXLEN)
+        maxq_eval_deque = deque(maxlen=MAXLEN)
+
         # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
@@ -347,11 +347,11 @@ def learn(args,
                     if training_step % args.pn_adapt_frequency == 0:
                         # Adapt parameter noise
                         agent.adapt_param_noise()
-                        if iters_so_far % args.eval_frequency == 0:
-                            # Store the action-space dist between perturbed and non-perturbed
-                            d['pn_dist'].append(agent.pn_dist)
-                            # Store the new std resulting from the adaption
-                            d['pn_cur_std'].append(agent.param_noise.cur_std)
+                    if rank == 0 and iters_so_far % args.eval_frequency == 0:
+                        # Store the action-space dist between perturbed and non-perturbed
+                        d['pn_dist'].append(agent.pn_dist)
+                        # Store the new std resulting from the adaption
+                        d['pn_cur_std'].append(agent.param_noise.cur_std)
 
                 # Sample a batch of transitions from the replay buffer
                 batch = agent.sample_batch()
@@ -362,10 +362,20 @@ def learn(args,
                     update_actor=not bool(iters_so_far % args.actor_update_delay),  # from TD3
                     iters_so_far=iters_so_far,
                 )
-                if iters_so_far % args.eval_frequency == 0:
+                if rank == 0 and iters_so_far % args.eval_frequency == 0:
                     # Log training stats
                     d['actr_losses'].append(metrics['actr_loss'])
                     d['crit_losses'].append(metrics['crit_loss'])
+                    if iters_so_far >= agent.hps.warm_start:
+                        d['q_stats_mean'].append(metrics['q_mean'])
+                        d['q_stats_std'].append(metrics['q_std'])
+                        d['q_stats_min'].append(metrics['q_min'])
+                        d['q_stats_max'].append(metrics['q_max'])
+                        if args.algo.split('_')[0] == 'ptso':
+                            d['u_stats_mean'].append(metrics['u_mean'])
+                            d['u_stats_std'].append(metrics['u_std'])
+                            d['u_stats_min'].append(metrics['u_min'])
+                            d['u_stats_max'].append(metrics['u_max'])
                     if agent.hps.clipped_double:
                         d['twin_losses'].append(metrics['twin_loss'])
                     if agent.hps.prioritized_replay:
@@ -404,6 +414,17 @@ def learn(args,
 
             # Log stats in csv
             logger.record_tabular(_str, step)
+
+            if iters_so_far - 1 >= agent.hps.warm_start:
+                logger.record_tabular('q_stats_mean', np.mean(d['q_stats_mean']))
+                logger.record_tabular('q_stats_std', np.mean(d['q_stats_std']))
+                logger.record_tabular('q_stats_min', np.mean(d['q_stats_min']))
+                logger.record_tabular('q_stats_max', np.mean(d['q_stats_max']))
+                if args.algo.split('_')[0] == 'ptso':
+                    logger.record_tabular('u_stats_mean', np.mean(d['u_stats_mean']))
+                    logger.record_tabular('u_stats_std', np.mean(d['u_stats_std']))
+                    logger.record_tabular('u_stats_min', np.mean(d['u_stats_min']))
+                    logger.record_tabular('u_stats_max', np.mean(d['u_stats_max']))
             logger.record_tabular('main_eval_len', np.mean(d['main_eval_len']))
             logger.record_tabular('maxq_eval_len', np.mean(d['maxq_eval_len']))
             logger.record_tabular('main_eval_env_ret', np.mean(d['main_eval_env_ret']))
@@ -435,6 +456,18 @@ def learn(args,
             if agent.hps.clipped_double:
                 wandb.log({'twin_loss': np.mean(d['twin_losses'])},
                           step=step)
+            if iters_so_far - 1 >= agent.hps.warm_start:
+                wandb.log({'q_stats_mean': np.mean(d['q_stats_mean']),
+                           'q_stats_std': np.mean(d['q_stats_std']),
+                           'q_stats_min': np.mean(d['q_stats_min']),
+                           'q_stats_max': np.mean(d['q_stats_max'])},
+                          step=step)
+                if args.algo.split('_')[0] == 'ptso':
+                    wandb.log({'u_stats_mean': np.mean(d['u_stats_mean']),
+                               'u_stats_std': np.mean(d['u_stats_std']),
+                               'u_stats_min': np.mean(d['u_stats_min']),
+                               'u_stats_max': np.mean(d['u_stats_max'])},
+                              step=step)
             wandb.log({'main_eval_len': np.mean(d['main_eval_len']),
                        'maxq_eval_len': np.mean(d['maxq_eval_len']),
                        'main_eval_env_ret': np.mean(d['main_eval_env_ret']),
@@ -443,8 +476,8 @@ def learn(args,
                        'avg_maxq_eval_env_ret': np.mean(maxq_eval_deque)},
                       step=step)
 
-        # Clear the iteration's running stats
-        d.clear()
+            # Clear the iteration's running stats
+            d.clear()
 
     if not agent.hps.offline:
         # When running the algorithm online, save behavior policy model once we are done iterating

@@ -377,12 +377,12 @@ class TanhGaussActor(nn.Module):
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim, hidden_dims[0])),
                 ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
-                ('nl', nn.Tanh()),
+                ('nl', nn.ReLU()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(hidden_dims[0], hidden_dims[1])),
                 ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
-                ('nl', nn.Tanh()),
+                ('nl', nn.ReLU()),
             ]))),
         ]))
         if self.hps.state_dependent_std:

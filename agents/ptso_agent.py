@@ -70,9 +70,9 @@ class PTSOAgent(object):
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
+            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
@@ -94,7 +94,7 @@ class PTSOAgent(object):
         self.targ_ent = -self.ac_dim
 
         # Initialize the precision matrix
-        self.precision = torch.eye(hidden_dims[1][-1])
+        self.precision = 5. * torch.eye(hidden_dims[1][-1])
 
         # Set up replay buffer
         shapes = {
@@ -301,10 +301,6 @@ class PTSOAgent(object):
 
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
             log_prob = self.actr.logp(state, action_from_actr)
-            q_from_actr = self.crit.QZ(state, action_from_actr)
-            if self.hps.clipped_double:
-                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
-                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
 
             # Only update the policy after a certain number of iteration (CQL codebase: 20000)
             # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
@@ -313,11 +309,33 @@ class PTSOAgent(object):
 
             # Actor loss
             if start_using_q:
-                actr_loss = ((self.alpha_ent * log_prob) - q_from_actr +
-                             (self.hps.ptso_u_scale *
-                              self.crit.wrap_with_u_head(self.crit.phi(state, action)).sqrt())).mean()
+                # Use full-blown loss
+                q_from_actr = self.crit.QZ(state, action_from_actr)
+                if self.hps.clipped_double:
+                    twin_q_from_actr = self.twin.QZ(state, action_from_actr)
+                    q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+                metrics['q_mean'].append(q_from_actr.mean())
+                metrics['q_std'].append(q_from_actr.std())
+                metrics['q_min'].append(q_from_actr.min())
+                metrics['q_max'].append(q_from_actr.max())
+                actr_loss = (self.alpha_ent * log_prob) - q_from_actr
+
+                u_from_actr = self.crit.wrap_with_u_head(self.crit.phi(state, action_from_actr))
+                if iters_so_far > 0:
+                    # Skip the square root wrapping initially, reasonable chance of being negative at iter 0
+                    u_from_actr = u_from_actr.sqrt()
+                metrics['u_mean'].append(u_from_actr.mean())
+                metrics['u_std'].append(u_from_actr.std())
+                metrics['u_min'].append(u_from_actr.min())
+                metrics['u_max'].append(u_from_actr.max())
+                any_nan = u_from_actr.isnan().any()
+                assert not any_nan
+                actr_loss -= self.hps.ptso_u_scale * u_from_actr
+                actr_loss = actr_loss.mean()
             else:
-                actr_loss = F.mse_loss(log_prob, self.actr.logp(state, action))
+                # Use behavioral cloning losses
+                actr_loss = (F.mse_loss(self.actr.logp(state, action).detach(), log_prob) +
+                             F.mse_loss(action, action_from_actr))
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
@@ -493,25 +511,42 @@ class PTSOAgent(object):
         if self.hps.clipped_double:
             twin_loss += min_twin_loss
 
-        # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
+        # Piece #4 (PTSO): uncertainty via Uncertainty Bellman Equation
         # The target of the Uncertainty Bellman Equation is the variance estimate of the error epsilon (paper)
+
+        # We don't use the twin critic past this point, to same on evalutations and matrix multiplications
+
         assert not self.hps.n_step_returns
 
         # Depending on a hyper-parameter, use the target critics in `targ_u` calculation, or not at all here
-        if self.hps.ptso_use_targ_for_u:
-            _crit = self.targ_crit
-            if self.hps.clipped_double:
-                _twin = self.targ_twin
-        else:
-            _crit = self.crit
-            if self.hps.clipped_double:
-                _twin = self.twin
+        _crit = self.targ_crit if self.hps.ptso_use_targ_for_u else self.crit
+
+        # Create the UBE target
+        # Computations done with batch dimension
+        with torch.no_grad():
+            new_phi = _crit.phi(state, action)  # shape: batch size x last hidden dim
+            new_next_phi = _crit.phi(next_state, next_action)  # shape: batch size x last hidden dim
+
+            _new_phi = new_phi.unsqueeze(-1)
+            _new_phi_t = torch.transpose(_new_phi, -1, -2)
+            inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
+            targ_u = torch.bmm(torch.bmm(_new_phi_t,
+                                         inflated_precision),
+                               _new_phi).squeeze(-1)
+            targ_u += ((self.hps.gamma ** 2) *
+                       (1. - done) *
+                       _crit.wrap_with_u_head(new_next_phi))
+
+        u_crit_loss = F.mse_loss(self.crit.wrap_with_u_head(self.crit.phi(state, action).detach()),
+                                 targ_u.detach())  # detach, just in case
+
+        crit_loss += u_crit_loss
 
         # Update the global uncertainty matrix (sigma in UBE, the covariance matrix) according to equation 14 in UBE
         # Computations done without the batch dimension (non-batchable iterative process)
-        new_phi = _crit.phi(next_state, next_action).detach()  # shape: batch size x last hidden dim
-        for i in range(self.hps.batch_size):
+        n = int(np.clip(self.hps.ptso_num_mat_updates_per_iter, 1, self.hps.batch_size))
+        # Note, pick an n << batch_size to save compute time
+        for i in range(n):
             _new_phi = new_phi[i, :].unsqueeze(-1)
             _new_phi_t = torch.transpose(_new_phi, -1, -2)
             denom = (torch.matmul(torch.matmul(_new_phi_t,
@@ -523,38 +558,6 @@ class PTSOAgent(object):
                                               _new_phi_t),
                                  self.precision)
             self.precision -= (numer / denom)
-
-        # Create the UBE target
-        # Computations done with batch dimension
-        _new_phi = new_phi.unsqueeze(-1)
-        _new_phi_t = torch.transpose(_new_phi, -1, -2)
-        inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
-        targ_u = torch.bmm(torch.bmm(_new_phi_t,
-                                     inflated_precision),
-                           _new_phi).squeeze(-1)
-        targ_u += ((self.hps.gamma ** 2) *
-                   (1. - done) *
-                   _crit.wrap_with_u_head(new_phi))
-        if self.hps.clipped_double:
-            _new_phi = _twin.phi(next_state, next_action).detach().unsqueeze(-1)
-            _new_phi_t = torch.transpose(_new_phi, -1, -2)
-            targ_u_twin = torch.bmm(torch.bmm(_new_phi_t,
-                                              inflated_precision),
-                                    _new_phi).squeeze(-1)
-            targ_u_twin += ((self.hps.gamma ** 2) *
-                            (1. - done) *
-                            _twin.wrap_with_u_head(new_phi))
-            targ_u = torch.min(targ_u, targ_u_twin)
-
-        u_crit_loss = F.mse_loss(self.crit.wrap_with_u_head(self.crit.phi(state, action)), targ_u.detach())
-        if self.hps.clipped_double:
-            u_twin_loss = F.mse_loss(self.twin.wrap_with_u_head(self.twin.phi(state, action)), targ_u.detach())
-
-        crit_loss += u_crit_loss
-        if self.hps.clipped_double:
-            twin_loss += u_twin_loss
-
-        # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
         self.crit_opt.zero_grad()
         crit_loss.backward(retain_graph=True)

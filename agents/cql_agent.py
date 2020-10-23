@@ -298,10 +298,6 @@ class CQLAgent(object):
 
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
             log_prob = self.actr.logp(state, action_from_actr)
-            q_from_actr = self.crit.QZ(state, action_from_actr)
-            if self.hps.clipped_double:
-                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
-                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
 
             # Only update the policy after a certain number of iteration (CQL codebase: 20000)
             # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
@@ -310,9 +306,20 @@ class CQLAgent(object):
 
             # Actor loss
             if start_using_q:
+                # Use full-blown loss
+                q_from_actr = self.crit.QZ(state, action_from_actr)
+                if self.hps.clipped_double:
+                    twin_q_from_actr = self.twin.QZ(state, action_from_actr)
+                    q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+                metrics['q_mean'].append(q_from_actr.mean())
+                metrics['q_std'].append(q_from_actr.std())
+                metrics['q_min'].append(q_from_actr.min())
+                metrics['q_max'].append(q_from_actr.max())
                 actr_loss = ((self.alpha_ent * log_prob) - q_from_actr).mean()
             else:
-                actr_loss = F.mse_loss(log_prob, self.actr.logp(state, action))
+                # Use behavioral cloning losses
+                actr_loss = (F.mse_loss(self.actr.logp(state, action).detach(), log_prob) +
+                             F.mse_loss(action, action_from_actr))
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()

@@ -129,6 +129,7 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'cql_use_version_3', default=True)
 
     parser.add_argument('--ptso_u_scale', type=float, default=1.)
-    boolean_flag(parser, 'ptso_use_targ_for_u', default=True)
+    boolean_flag(parser, 'ptso_use_targ_for_u', default=False)
+    parser.add_argument('--ptso_num_mat_updates_per_iter', type=int, default=10)
 
     return parser

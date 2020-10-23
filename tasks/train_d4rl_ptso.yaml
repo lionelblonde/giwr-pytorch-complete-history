@@ -80,5 +80,7 @@ cql_targ_lower_bound: 1.
 cql_min_q_weight: 5.
 cql_state_inflate: 10
 cql_use_version_3: true
+ptso_use_u_in_p_i: true
 ptso_u_scale: 1.
 ptso_use_targ_for_u: false
+ptso_num_mat_updates_per_iter: 10
