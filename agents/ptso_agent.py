@@ -304,11 +304,9 @@ class PTSOAgent(object):
 
             # Only update the policy after a certain number of iteration (CQL codebase: 20000)
             # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
-            start_using_q = torch.tensor(iters_so_far >= self.hps.warm_start).detach().to(self.device)
-            # Note, unlike in the other algorithms, we do not cast the boolean as float
 
             # Actor loss
-            if start_using_q:
+            if iters_so_far >= self.hps.warm_start:
                 # Use full-blown loss
                 q_from_actr = self.crit.QZ(state, action_from_actr)
                 if self.hps.clipped_double:
@@ -321,7 +319,7 @@ class PTSOAgent(object):
                 actr_loss = (self.alpha_ent * log_prob) - q_from_actr
 
                 u_from_actr = self.crit.wrap_with_u_head(self.crit.phi(state, action_from_actr))
-                if iters_so_far > 0:
+                if iters_so_far == self.hps.warm_start:
                     # Skip the square root wrapping initially, reasonable chance of being negative at iter 0
                     u_from_actr = u_from_actr.sqrt()
                 metrics['u_mean'].append(u_from_actr.mean())

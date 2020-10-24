@@ -301,11 +301,9 @@ class CQLAgent(object):
 
             # Only update the policy after a certain number of iteration (CQL codebase: 20000)
             # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
-            start_using_q = torch.tensor(iters_so_far >= self.hps.warm_start).detach().to(self.device)
-            # Note, unlike in the other algorithms, we do not cast the boolean as float
 
             # Actor loss
-            if start_using_q:
+            if iters_so_far >= self.hps.warm_start:
                 # Use full-blown loss
                 q_from_actr = self.crit.QZ(state, action_from_actr)
                 if self.hps.clipped_double:
