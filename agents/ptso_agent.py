@@ -317,8 +317,9 @@ class PTSOAgent(object):
             metrics['q_max'].append(q_from_actr.max())
             actr_loss = (self.alpha_ent * log_prob) - q_from_actr
 
-            u_from_actr = self.crit.wrap_with_u_head(self.crit.phi(state, action_from_actr)).clamp(min=0.).sqrt()
+            u_from_actr = self.crit.wrap_with_u_head(self.crit.phi(state, action_from_actr)).clamp(min=1e-6).sqrt()
             # Note, we clamp for the value to be non-negative, for the square-root to always be defined
+            # We clip with an epsilon strictly greater than zero because of sqrt's derivative at zero
             metrics['u_mean'].append(u_from_actr.mean())
             metrics['u_std'].append(u_from_actr.std())
             metrics['u_min'].append(u_from_actr.min())

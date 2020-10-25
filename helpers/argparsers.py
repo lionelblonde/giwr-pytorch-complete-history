@@ -15,7 +15,7 @@ def argparser(description="Offline RL Experiment"):
 
     # Generic
     parser.add_argument('--uuid', type=str, default=None)
-    boolean_flag(parser, 'cuda', default=False)
+    boolean_flag(parser, 'cuda', default=True)
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)

@@ -30,6 +30,7 @@ ENV_BUNDLES = {
     },
     'd4rl': {
         'debug': ['halfcheetah-medium-v0'],
+        'debug_antmaze': ['antmaze-umaze-v0'],
         'eevee': ['hopper-random-v0',
                   'hopper-medium-v0',
                   'hopper-expert-v0'],

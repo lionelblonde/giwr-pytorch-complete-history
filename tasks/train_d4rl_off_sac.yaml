@@ -4,7 +4,7 @@ meta:
   algo: 'sac'
 
 resources:
-  cuda: false
+  cuda: true
 
 logging:
   wandb_project: 'flareon'

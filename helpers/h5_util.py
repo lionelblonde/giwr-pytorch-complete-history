@@ -13,5 +13,7 @@ def load_dict_h5py(fname):
     data = dict()
     with h5py.File(fname, 'r') as hf:
         for key in hf.keys():
+            if key == 'infos':  # antmaze environments have this key
+                continue
             data[key] = hf[key][()]
     return data
