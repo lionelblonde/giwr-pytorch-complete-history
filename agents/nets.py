@@ -132,8 +132,16 @@ class Critic(nn.Module):
         self.head.apply(init(weight_scale=0.01))
 
         if ube:
+            self.u_fc_stack = nn.Sequential(OrderedDict([
+                ('fc_block_1', nn.Sequential(OrderedDict([
+                    ('fc', nn.Linear(hidden_dims[1], hidden_dims[1])),
+                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
+                    ('nl', nn.ReLU()),
+                ]))),
+            ]))
             self.u_head = nn.Linear(hidden_dims[1], 1)
             # Perform initialization
+            self.u_fc_stack.apply(init(weight_scale=math.sqrt(2)))
             self.u_head.apply(init(weight_scale=0.01))
 
     def phi(self, ob, ac):
@@ -148,7 +156,7 @@ class Critic(nn.Module):
         return x
 
     def wrap_with_u_head(self, x):
-        return self.u_head(x)
+        return self.u_head(self.u_fc_stack(x))
 
     def wrap_with_q_head(self, x):
         return self.head(x)
@@ -158,6 +166,16 @@ class Critic(nn.Module):
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
         return x
+
+    @property
+    def q_trainable_params(self):
+        return ([p for p in self.fc_stack.parameters()] +
+                [p for p in self.head.parameters()])
+
+    @property
+    def u_trainable_params(self):
+        return ([p for p in self.u_fc_stack.parameters()] +
+                [p for p in self.u_head.parameters()])
 
     @property
     def out_params(self):

@@ -61,14 +61,12 @@ class SACAgent(object):
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
 
         self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
-        sync_with_root(self.crit)
         self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
             self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
-            sync_with_root(self.twin)
             self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
@@ -363,11 +361,9 @@ class SACAgent(object):
 
         self.crit_opt.zero_grad()
         crit_loss.backward()
-        average_gradients(self.crit, self.device)
         if self.hps.clipped_double:
             self.twin_opt.zero_grad()
             twin_loss.backward()
-            average_gradients(self.twin, self.device)
         self.crit_opt.step()
         if self.hps.clipped_double:
             self.twin_opt.step()

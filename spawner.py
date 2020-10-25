@@ -114,7 +114,13 @@ class Spawner(object):
             calibers = dict(short='0-06:00:00', long='0-12:00:00',  # partition: 'shared-EL7'
                             verylong='2-00:00:00', veryverylong='4-00:00:00')  # partition: 'mono-EL7'
             self.duration = calibers[self.args.caliber]  # intented KeyError trigger if invalid caliber
-            self.partition = 'mono-EL7' if 'verylong' in self.args.caliber else 'shared-EL7'
+            if 'verylong' in self.args.caliber:
+                self.partition = 'mono-EL7'
+            else:
+                if self.config['resources']['cuda']:
+                    self.partition = 'shared-gpu-EL7'
+                else:
+                    self.partition = 'shared-EL7'
 
         # Define the set of considered environments from the considered suite
         self.envs = ENV_BUNDLES[self.config['meta']['benchmark']][self.args.env_bundle]

@@ -151,13 +151,20 @@ def guess_available_gpus(n_gpus=None):
 def setup_mpi_gpus(comm=COMM):
     """Set CUDA_VISIBLE_DEVICES using MPI"""
     available_gpus = guess_available_gpus()
+    logger.info(f"available_gpus: {available_gpus}")
     node_id = platform.node()
     nodes_ordered_by_rank = comm.allgather(node_id)
     processes_outranked_on_this_node = [n for n in nodes_ordered_by_rank[:comm.Get_rank()]
                                         if n == node_id]
     local_rank = len(processes_outranked_on_this_node)
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(available_gpus[local_rank])
-    print("rank {} will use gpu {}".format(local_rank, os.environ['CUDA_VISIBLE_DEVICES']))
+    if comm.Get_size() > len(available_gpus):
+        logger.info(f"OVERCOMMITTING: more MPI workers ({comm.Get_size()}) than GPUs ({len(available_gpus)})!")
+    if comm.Get_rank() == 0:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(available_gpus[local_rank])
+    else:
+        base_workers_per_gpu = comm.Get_size() // len(available_gpus)
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(available_gpus[(local_rank - 1) // base_workers_per_gpu])
+    print(f"rank {local_rank} will use gpu {os.environ['CUDA_VISIBLE_DEVICES']}")
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Normalizer.

@@ -235,7 +235,7 @@ def learn(args,
     timed = timed_cm_wrapper(logger)
 
     # Start clocks
-    num_iters = int(args.num_steps) // args.rollout_len
+    num_iters = int(args.num_steps) if args.offline else int(args.num_steps) // args.rollout_len
     iters_so_far = 0
     timesteps_so_far = 0
     tstart = time.time()
@@ -308,10 +308,6 @@ def learn(args,
         # if iters_so_far % 20 == 0:
         #     # Check if the mpi workers are still synced
         #     sync_check(agent.actr)
-        #     sync_check(agent.crit)
-        #     if agent.hps.clipped_double:
-        #         sync_check(agent.twin)
-        #     sync_check(agent.disc)
 
         if rank == 0 and iters_so_far % args.save_frequency == 0:
             # Save the model
@@ -376,6 +372,7 @@ def learn(args,
                             d['u_stats_std'].append(metrics['u_std'])
                             d['u_stats_min'].append(metrics['u_min'])
                             d['u_stats_max'].append(metrics['u_max'])
+                            d['targ_u_stats_min'].append(metrics['targ_u_min'])
                     if agent.hps.clipped_double:
                         d['twin_losses'].append(metrics['twin_loss'])
                     if agent.hps.prioritized_replay:
@@ -425,6 +422,7 @@ def learn(args,
                     logger.record_tabular('u_stats_std', np.mean(d['u_stats_std']))
                     logger.record_tabular('u_stats_min', np.mean(d['u_stats_min']))
                     logger.record_tabular('u_stats_max', np.mean(d['u_stats_max']))
+                    logger.record_tabular('targ_u_stats_min', np.mean(d['targ_u_stats_min']))
             logger.record_tabular('main_eval_len', np.mean(d['main_eval_len']))
             logger.record_tabular('maxq_eval_len', np.mean(d['maxq_eval_len']))
             logger.record_tabular('main_eval_env_ret', np.mean(d['main_eval_env_ret']))
@@ -466,7 +464,8 @@ def learn(args,
                     wandb.log({'u_stats_mean': np.mean(d['u_stats_mean']),
                                'u_stats_std': np.mean(d['u_stats_std']),
                                'u_stats_min': np.mean(d['u_stats_min']),
-                               'u_stats_max': np.mean(d['u_stats_max'])},
+                               'u_stats_max': np.mean(d['u_stats_max']),
+                               'targ_u_stats_min': np.mean(d['targ_u_stats_min'])},
                               step=step)
             wandb.log({'main_eval_len': np.mean(d['main_eval_len']),
                        'maxq_eval_len': np.mean(d['maxq_eval_len']),
