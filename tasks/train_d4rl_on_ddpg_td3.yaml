@@ -5,6 +5,7 @@ meta:
 
 resources:
   cuda: false
+  gpu_index: 0
 
 logging:
   wandb_project: 'flareon'

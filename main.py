@@ -46,7 +46,7 @@ def train(args):
         assert torch.cuda.is_available()
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
-        device = torch.device("cuda:0")
+        device = torch.device(f"cuda:{args.gpu_index}")
         setup_mpi_gpus()
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""  # kill any possibility of usage

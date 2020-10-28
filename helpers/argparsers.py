@@ -8,14 +8,12 @@ def argparser(description="Offline RL Experiment"):
     parser = argparse.ArgumentParser(description=description,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    # Primary
     parser.add_argument('--wandb_project', help='wandb project name', default='DEFAULT')
     parser.add_argument('--env_id', help='environment identifier', default=None)
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-
-    # Generic
     parser.add_argument('--uuid', type=str, default=None)
     boolean_flag(parser, 'cuda', default=True)
+    parser.add_argument('--gpu_index', type=int, default=0)
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)
