@@ -84,3 +84,5 @@ cql_use_version_3: true
 ptso_u_scale: 1.
 ptso_use_targ_for_u: false
 ptso_num_mat_updates_per_iter: 10
+cql_use_min_q_loss: true
+cql_use_max_q_loss: true

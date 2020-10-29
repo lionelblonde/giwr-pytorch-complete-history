@@ -81,3 +81,5 @@ cql_targ_lower_bound: 1.
 cql_min_q_weight: 5.
 cql_state_inflate: 10
 cql_use_version_3: true
+cql_use_min_q_loss: true
+cql_use_max_q_loss: true

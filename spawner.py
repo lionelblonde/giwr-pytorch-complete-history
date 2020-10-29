@@ -157,7 +157,8 @@ class Spawner(object):
                           'offline', 'use_expert_demos', 'state_dependent_std', 'use_adaptive_alpha',
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
-                          'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u']
+                          'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u',
+                          'cql_use_min_q_loss', 'cql_use_max_q_loss']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -332,6 +333,8 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
                 'cql_use_version_3': self.config.get('cql_use_version_3', True),
+                'cql_use_min_q_loss': self.config.get('cql_use_min_q_loss', True),
+                'cql_use_max_q_loss': self.config.get('cql_use_max_q_loss', True),
 
                 'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
@@ -434,6 +437,8 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
                 'cql_use_version_3': self.config.get('cql_use_version_3', True),
+                'cql_use_min_q_loss': self.config.get('cql_use_min_q_loss', True),
+                'cql_use_max_q_loss': self.config.get('cql_use_max_q_loss', True),
 
                 'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),

@@ -125,6 +125,8 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--cql_min_q_weight', type=float, default=5.)
     parser.add_argument('--cql_state_inflate', type=int, default=10)
     boolean_flag(parser, 'cql_use_version_3', default=True)
+    boolean_flag(parser, 'cql_use_min_q_loss', default=True)
+    boolean_flag(parser, 'cql_use_max_q_loss', default=True)
 
     parser.add_argument('--ptso_u_scale', type=float, default=1.)
     boolean_flag(parser, 'ptso_use_targ_for_u', default=False)

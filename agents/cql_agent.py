@@ -406,85 +406,92 @@ class CQLAgent(object):
         if self.hps.clipped_double:
             twin_loss = twin_mse_td_errors.mean()
 
-        # Add CQL contribution (rest is pretty much exactly SAC)
-        # Actions and log-probabilities
-        cql_ac, cql_logp = self.ac_factory(self.actr, state, self.hps.cql_state_inflate)
-        cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, self.hps.cql_state_inflate)
-        cql_rand_ac = torch.Tensor(self.hps.batch_size * self.hps.cql_state_inflate,
-                                   self.ac_dim).uniform_(-self.max_ac, self.max_ac).to(self.device)
-        # Q-values
-        cql_q = self.q_factory(self.crit, state, cql_ac)
-        cql_next_q = self.q_factory(self.crit, state, cql_next_ac)
-        cql_rand_q = self.q_factory(self.crit, state, cql_rand_ac)
-        if self.hps.clipped_double:
-            cql_twin_q = self.q_factory(self.twin, state, cql_ac)
-            cql_next_twin_q = self.q_factory(self.twin, state, cql_next_ac)
-            cql_rand_twin_q = self.q_factory(self.twin, state, cql_rand_ac)
+        if self.hps.cql_use_min_q_loss:
+            # Add CQL contribution (rest is pretty much exactly SAC)
+            # Actions and log-probabilities
+            cql_ac, cql_logp = self.ac_factory(self.actr, state, self.hps.cql_state_inflate)
+            cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, self.hps.cql_state_inflate)
+            cql_rand_ac = torch.Tensor(self.hps.batch_size * self.hps.cql_state_inflate,
+                                       self.ac_dim).uniform_(-self.max_ac, self.max_ac).to(self.device)
+            # Q-values
+            cql_q = self.q_factory(self.crit, state, cql_ac)
+            cql_next_q = self.q_factory(self.crit, state, cql_next_ac)
+            cql_rand_q = self.q_factory(self.crit, state, cql_rand_ac)
+            if self.hps.clipped_double:
+                cql_twin_q = self.q_factory(self.twin, state, cql_ac)
+                cql_next_twin_q = self.q_factory(self.twin, state, cql_next_ac)
+                cql_rand_twin_q = self.q_factory(self.twin, state, cql_rand_ac)
 
-        # Concatenate every Q-values estimates into one big vector that we'll later try to shrink
-        # The answer to "why are so many Q-values are evaluated here?" is:
-        # "we want to cover the maximum amount of ground, so we consider all the Q-values we can afford."
-        # Note, `dim` is set to 1 not -1, ensure the size is not 1
-        if self.hps.cql_use_version_3:
-            # Importance-sampled version
-            weird_stuff = np.log(0.5 ** cql_rand_ac.shape[-1])
-            cql_cat_q = torch.cat([
-                cql_rand_q - weird_stuff,
-                cql_next_q - cql_next_logp.detach(),
-                cql_q - cql_logp.detach(),
-            ], dim=1)
-            if self.hps.clipped_double:
-                cql_cat_twin_q = torch.cat([
-                    cql_rand_twin_q - weird_stuff,
-                    cql_next_twin_q - cql_next_logp.detach(),
-                    cql_twin_q - cql_logp.detach(),
+            # Concatenate every Q-values estimates into one big vector that we'll later try to shrink
+            # The answer to "why are so many Q-values are evaluated here?" is:
+            # "we want to cover the maximum amount of ground, so we consider all the Q-values we can afford."
+            # Note, `dim` is set to 1 not -1, ensure the size is not 1
+            if self.hps.cql_use_version_3:
+                # Importance-sampled version
+                weird_stuff = np.log(0.5 ** cql_rand_ac.shape[-1])
+                cql_cat_q = torch.cat([
+                    cql_rand_q - weird_stuff,
+                    cql_next_q - cql_next_logp.detach(),
+                    cql_q - cql_logp.detach(),
                 ], dim=1)
-        else:
-            cql_cat_q = torch.cat([
-                q.unsqueeze(1),
-                cql_q,
-                cql_next_q,
-                cql_rand_q,
-            ], dim=1)
-            if self.hps.clipped_double:
-                cql_cat_twin_q = torch.cat([
-                    twin_q.unsqueeze(1),
-                    cql_twin_q,
-                    cql_next_twin_q,
-                    cql_rand_twin_q,
+                if self.hps.clipped_double:
+                    cql_cat_twin_q = torch.cat([
+                        cql_rand_twin_q - weird_stuff,
+                        cql_next_twin_q - cql_next_logp.detach(),
+                        cql_twin_q - cql_logp.detach(),
+                    ], dim=1)
+            else:
+                cql_cat_q = torch.cat([
+                    q.unsqueeze(1),
+                    cql_q,
+                    cql_next_q,
+                    cql_rand_q,
                 ], dim=1)
-        # weirdly, the version 3 does not use the stock Q networks, but no questions asked for now
+                if self.hps.clipped_double:
+                    cql_cat_twin_q = torch.cat([
+                        twin_q.unsqueeze(1),
+                        cql_twin_q,
+                        cql_next_twin_q,
+                        cql_rand_twin_q,
+                    ], dim=1)
+            # weirdly, the version 3 does not use the stock Q networks, but no questions asked for now
 
         # Assemble the 3 pieces of the CQL loss
         # (cf. slide 16 in: https://docs.google.com/presentation/d/
         # 1F-dNg2LT75z9vJiPqASHayiZ3ewB6HE0KPgnZnY2rTg/edit#slide=id.g80c29cc4d2_0_101)
 
-        # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
-        # will be the first to be shrinked)
-        min_crit_loss = (torch.logsumexp(cql_cat_q / TEMPERATURE, dim=1).mean() *
-                         self.hps.cql_min_q_weight * TEMPERATURE)
+        min_crit_loss = 0.
         if self.hps.clipped_double:
-            min_twin_loss = (torch.logsumexp(cql_cat_twin_q / TEMPERATURE, dim=1).mean() *
-                             self.hps.cql_min_q_weight * TEMPERATURE)
+            min_twin_loss = 0.
 
-        # Piece #2: maximize the Q-function on points in the offline dataset
-        min_crit_loss -= q.mean() * self.hps.cql_min_q_weight
-        if self.hps.clipped_double:
-            min_twin_loss -= twin_q.mean() * self.hps.cql_min_q_weight
-
-        if self.hps.cql_use_adaptive_alpha_pri:
-            min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)
+        if self.hps.cql_use_min_q_loss:
+            # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
+            # will be the first to be shrinked)
+            min_crit_loss += (torch.logsumexp(cql_cat_q / TEMPERATURE, dim=1).mean() *
+                              self.hps.cql_min_q_weight * TEMPERATURE)
             if self.hps.clipped_double:
-                min_twin_loss = self.alpha_pri * (min_twin_loss - self.hps.cql_targ_lower_bound)
+                min_twin_loss += (torch.logsumexp(cql_cat_twin_q / TEMPERATURE, dim=1).mean() *
+                                  self.hps.cql_min_q_weight * TEMPERATURE)
 
+        if self.hps.cql_use_max_q_loss:
+            # Piece #2: maximize the Q-function on points in the offline dataset
+            min_crit_loss -= q.mean() * self.hps.cql_min_q_weight
             if self.hps.clipped_double:
-                alpha_pri_loss = -0.5 * (min_crit_loss + min_twin_loss)
-            else:
-                alpha_pri_loss = -min_crit_loss
-            self.log_alpha_pri_opt.zero_grad()
-            alpha_pri_loss.backward(retain_graph=True)
-            self.log_alpha_pri_opt.step()
-            metrics['alpha_pri_loss'].append(alpha_pri_loss)
+                min_twin_loss -= twin_q.mean() * self.hps.cql_min_q_weight
+
+            if self.hps.cql_use_adaptive_alpha_pri:
+                min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)
+                if self.hps.clipped_double:
+                    min_twin_loss = self.alpha_pri * (min_twin_loss - self.hps.cql_targ_lower_bound)
+
+                if self.hps.clipped_double:
+                    alpha_pri_loss = -0.5 * (min_crit_loss + min_twin_loss)
+                else:
+                    alpha_pri_loss = -min_crit_loss
+                self.log_alpha_pri_opt.zero_grad()
+                alpha_pri_loss.backward(retain_graph=True)
+                self.log_alpha_pri_opt.step()
+                metrics['alpha_pri_loss'].append(alpha_pri_loss)
 
         # Piece #3: Add the new losses to the vanilla ones, i.e. the traditional TD errors to minimize
         crit_loss += min_crit_loss
