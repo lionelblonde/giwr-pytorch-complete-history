@@ -42,6 +42,12 @@ ENV_BUNDLES = {
         'umbreon': ['halfcheetah-random-v0',
                     'halfcheetah-medium-v0',
                     'halfcheetah-expert-v0'],
+        'espeon': ['hopper-medium-v0',
+                   'hopper-expert-v0',
+                   'walker2d-medium-v0',
+                   'walker2d-expert-v0',
+                   'halfcheetah-medium-v0',
+                   'halfcheetah-expert-v0'],
         'mujoco': ['hopper-random-v0',
                    'hopper-medium-v0',
                    'hopper-expert-v0',
@@ -338,7 +344,9 @@ class Spawner(object):
 
                 'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
-                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 10),
+                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
+                'ptso_shaping_type': self.config.get('ptso_shaping_type', 'none'),
+                'ptso_shaping_scale': self.config.get('ptso_shaping_scale', 1.),
             }
         else:
             # No search, fixed hyper-parameters
@@ -442,7 +450,9 @@ class Spawner(object):
 
                 'ptso_u_scale': self.config.get('ptso_u_scale', 1.),
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
-                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 10),
+                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
+                'ptso_shaping_type': self.config.get('ptso_shaping_type', 'none'),
+                'ptso_shaping_scale': self.config.get('ptso_shaping_scale', 1.),
             }
 
         # Duplicate for each environment

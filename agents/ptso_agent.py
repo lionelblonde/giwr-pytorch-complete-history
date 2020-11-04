@@ -12,6 +12,7 @@ from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers.math_util import LRScheduler
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import perception_stack_parser, TanhGaussActor, Critic
+from agents.rnd import RandomNetworkDistillation
 
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
@@ -137,6 +138,9 @@ class PTSOAgent(object):
             total_num_steps=self.hps.num_steps,
         )
 
+        # Create RND networks
+        self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
+
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
         if self.hps.clipped_double:
@@ -249,7 +253,11 @@ class PTSOAgent(object):
                 ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
                 ac = float(self.max_ac) * _actr.sample(ob, sg=True)
                 # Among the 100 values, take the one with the highest Q value (or Z value)
-                q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
+                q_value = self.crit.QZ(ob, ac).mean(dim=1)
+                # u_value = (self.hps.ptso_u_scale *
+                #            self.crit.wrap_with_u_head(self.crit.phi(ob, ac)).mean(dim=1).clamp(min=1e-6).sqrt())
+                # # Note, mean in case we use a distributional critic
+                # q_value -= u_value
                 index = q_value.argmax(0)
                 ac = ac[index]
             else:
@@ -285,6 +293,9 @@ class PTSOAgent(object):
         # Container for all the metrics
         metrics = defaultdict(list)
 
+        # Update the RND network
+        self.rnd.update(batch)
+
         # Transfer to device
         state = torch.Tensor(batch['obs0']).to(self.device)
         action = torch.Tensor(batch['acs']).to(self.device)
@@ -317,7 +328,8 @@ class PTSOAgent(object):
             metrics['q_max'].append(q_from_actr.max())
             actr_loss = (self.alpha_ent * log_prob) - q_from_actr
 
-            u_from_actr = self.crit.wrap_with_u_head(self.crit.phi(state, action_from_actr)).clamp(min=1e-6).sqrt()
+            phi_from_actr = self.crit.phi(state, action_from_actr)
+            u_from_actr = self.crit.wrap_with_u_head(phi_from_actr).clamp(min=1e-6).sqrt()
             # Note, we clamp for the value to be non-negative, for the square-root to always be defined
             # We clip with an epsilon strictly greater than zero because of sqrt's derivative at zero
             metrics['u_mean'].append(u_from_actr.mean())
@@ -325,6 +337,17 @@ class PTSOAgent(object):
             metrics['u_min'].append(u_from_actr.min())
             metrics['u_max'].append(u_from_actr.max())
             assert not u_from_actr.isnan().any()
+
+            # if True:  # XXX you know what to do
+            #     _new_phi = phi_from_actr.unsqueeze(-1)
+            #     _new_phi_t = torch.transpose(_new_phi, -1, -2)
+            #     inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
+            #     v_q = torch.bmm(torch.bmm(_new_phi_t,
+            #                               inflated_precision),
+            #                     _new_phi).squeeze(-1)
+            #     actr_loss += self.hps.ptso_u_scale * (v_q + ((self.hps.gamma ** 2) * u_from_actr))
+            # else:
+            #     actr_loss += self.hps.ptso_u_scale * u_from_actr
             actr_loss += self.hps.ptso_u_scale * u_from_actr
 
             actr_loss = actr_loss.mean()
@@ -362,6 +385,23 @@ class PTSOAgent(object):
         # Compute target QZ estimate
         next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
         # Note, here, always stochastic selection of the target action
+
+        # Shape the reward
+        if iters_so_far >= self.hps.warm_start:  # rewards are not used during the warm-start period anyway
+            with torch.no_grad():
+                if self.hps.ptso_shaping_type == 'ube':
+                    psi = -u_from_actr.clone()
+                    next_psi = -self.crit.wrap_with_u_head(self.crit.phi(next_state, next_action))
+                elif self.hps.ptso_shaping_type == 'rnd':
+                    psi = -self.rnd.get_int_rew(state)
+                    next_psi = -self.rnd.get_int_rew(next_state)
+                else:
+                    raise NotImplementedError("invalid shaping method.")
+                logger.info(f"shaping: mean={psi.mean()}, std={psi.std()}, in [{psi.min()}, {psi.max()}]")
+                reward = (reward +
+                          (self.hps.gamma * self.hps.ptso_shaping_scale * next_psi) -
+                          (self.hps.ptso_shaping_scale * psi))
+
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
@@ -553,15 +593,14 @@ class PTSOAgent(object):
             _new_phi = self.crit.phi(state, action).unsqueeze(-1)
             _new_phi_t = torch.transpose(_new_phi, -1, -2)
             inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
-            targ_u = torch.bmm(torch.bmm(_new_phi_t,
-                                         inflated_precision),
-                               _new_phi).squeeze(-1)
-            targ_u += ((self.hps.gamma ** 2) *
-                       (1. - done) *
-                       _crit.wrap_with_u_head(_crit.phi(next_state, next_action)))
-            targ_u = targ_u.clamp(min=0.)
+            v_q = torch.bmm(torch.bmm(_new_phi_t,
+                                      inflated_precision),
+                            _new_phi).squeeze(-1)
+            u_prime = _crit.wrap_with_u_head(_crit.phi(next_state, next_action))
+            targ_u = (v_q + ((self.hps.gamma ** 2) * (1. - done) * u_prime)).clamp(min=0.)
             # Note, we clamp for the target to be non-negative, to urge the prediction to always be non-negative
-        metrics['targ_u_min'].append(targ_u.min())  # to verify that the target uncertainty is always positive
+            metrics['v_q_behavior'].append(v_q.mean())
+            metrics['u_behavior'].append(self.crit.wrap_with_u_head(self.crit.phi(state, action)).mean())
 
         u_loss = F.mse_loss(self.crit.wrap_with_u_head(self.crit.phi(state, action).detach()),
                             targ_u.detach())  # detach, just in case
@@ -570,24 +609,43 @@ class PTSOAgent(object):
         u_loss.backward(retain_graph=True)
         self.u_opt.step()
 
+        # Monitoring uncertainty values here and there
+        with torch.no_grad():
+            # Metric when the action is the actor's prediction
+            _new_phi_from_actr = self.crit.phi(state, action_from_actr).unsqueeze(-1)
+            _new_phi_t_from_actr = torch.transpose(_new_phi, -1, -2)
+            v_q_from_actr = torch.bmm(torch.bmm(_new_phi_t_from_actr,
+                                                inflated_precision),
+                                      _new_phi_from_actr).squeeze(-1)
+            metrics['v_q_from_actr'].append(v_q_from_actr.mean())
+            metrics['u_from_actr'].append(self.crit.wrap_with_u_head(self.crit.phi(state, action_from_actr)).mean())
+            # Metric when the action is sampled uniformly
+            action_uniform = torch.Tensor(self.hps.batch_size, self.ac_dim).uniform_(-self.max_ac,
+                                                                                     self.max_ac).to(self.device)
+            _new_phi_uniform = self.crit.phi(state, action_uniform).unsqueeze(-1)
+            _new_phi_t_uniform = torch.transpose(_new_phi_uniform, -1, -2)
+            v_q_uniform = torch.bmm(torch.bmm(_new_phi_t_uniform,
+                                              inflated_precision),
+                                    _new_phi_uniform).squeeze(-1)
+            metrics['v_q_uniform'].append(v_q_uniform.mean())
+            metrics['u_uniform'].append(self.crit.wrap_with_u_head(self.crit.phi(state, action_uniform)).mean())
+
         # Update the global uncertainty matrix (sigma in UBE, the covariance matrix) according to equation 14 in UBE
         # Computations done without the batch dimension (non-batchable iterative process)
         n = int(np.clip(self.hps.ptso_num_mat_updates_per_iter, 1, self.hps.batch_size))
         # Note, pick an n << batch_size to save compute time
-        phi_from_actr = self.crit.phi(state, action_from_actr).detach()
         # Note, we adapt the global precision estimate with actions from the actor, not from the behavioral policy
-        for i in range(n):
-            _new_phi = phi_from_actr[i, :].unsqueeze(-1)
-            _new_phi_t = torch.transpose(_new_phi, -1, -2)
-            denom = (torch.matmul(torch.matmul(_new_phi_t,
-                                               self.precision),
-                                  _new_phi)
-                     + 1.).squeeze()  # scalar
-            numer = torch.matmul(torch.matmul(torch.matmul(self.precision,
-                                                           _new_phi),
-                                              _new_phi_t),
-                                 self.precision)
-            self.precision -= (numer / denom)
+        with torch.no_grad():
+            for i in range(n):
+                denom = (torch.matmul(torch.matmul(_new_phi_t[i, ...],
+                                                   self.precision),
+                                      _new_phi[i, ...])
+                         + 1.).squeeze()  # scalar
+                numer = torch.matmul(torch.matmul(torch.matmul(self.precision,
+                                                               _new_phi[i, ...]),
+                                                  _new_phi_t[i, ...]),
+                                     self.precision)
+                self.precision -= (numer / denom)
 
         if iters_so_far % self.hps.crit_targ_update_freq == 0:
             self.update_target_net()

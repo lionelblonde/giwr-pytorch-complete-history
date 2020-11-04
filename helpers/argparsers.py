@@ -130,6 +130,8 @@ def argparser(description="Offline RL Experiment"):
 
     parser.add_argument('--ptso_u_scale', type=float, default=1.)
     boolean_flag(parser, 'ptso_use_targ_for_u', default=False)
-    parser.add_argument('--ptso_num_mat_updates_per_iter', type=int, default=10)
+    parser.add_argument('--ptso_num_mat_updates_per_iter', type=int, default=100)
+    parser.add_argument('--ptso_shaping_type', type=str, choices=['none', 'rnd', 'ube'], default='none')
+    parser.add_argument('--ptso_shaping_scale', type=float, default=1.)
 
     return parser

@@ -372,7 +372,12 @@ def learn(args,
                             d['u_stats_std'].append(metrics['u_std'])
                             d['u_stats_min'].append(metrics['u_min'])
                             d['u_stats_max'].append(metrics['u_max'])
-                            d['targ_u_stats_min'].append(metrics['targ_u_min'])
+                            d['v_q_behavior'].append(metrics['v_q_behavior'])
+                            d['u_behavior'].append(metrics['u_behavior'])
+                            d['v_q_from_actr'].append(metrics['v_q_from_actr'])
+                            d['u_from_actr'].append(metrics['u_from_actr'])
+                            d['v_q_uniform'].append(metrics['v_q_uniform'])
+                            d['u_uniform'].append(metrics['u_uniform'])
                     if agent.hps.clipped_double:
                         d['twin_losses'].append(metrics['twin_loss'])
                     if agent.hps.prioritized_replay:
@@ -422,7 +427,12 @@ def learn(args,
                     logger.record_tabular('u_stats_std', np.mean(d['u_stats_std']))
                     logger.record_tabular('u_stats_min', np.mean(d['u_stats_min']))
                     logger.record_tabular('u_stats_max', np.mean(d['u_stats_max']))
-                    logger.record_tabular('targ_u_stats_min', np.mean(d['targ_u_stats_min']))
+                    logger.record_tabular('v_q_behavior', np.mean(d['v_q_behavior']))
+                    logger.record_tabular('u_behavior', np.mean(d['u_behavior']))
+                    logger.record_tabular('v_q_from_actr', np.mean(d['v_q_from_actr']))
+                    logger.record_tabular('u_from_actr', np.mean(d['u_from_actr']))
+                    logger.record_tabular('v_q_uniform', np.mean(d['v_q_uniform']))
+                    logger.record_tabular('u_uniform', np.mean(d['u_uniform']))
             logger.record_tabular('main_eval_len', np.mean(d['main_eval_len']))
             logger.record_tabular('maxq_eval_len', np.mean(d['maxq_eval_len']))
             logger.record_tabular('main_eval_env_ret', np.mean(d['main_eval_env_ret']))
@@ -465,7 +475,12 @@ def learn(args,
                                'u_stats_std': np.mean(d['u_stats_std']),
                                'u_stats_min': np.mean(d['u_stats_min']),
                                'u_stats_max': np.mean(d['u_stats_max']),
-                               'targ_u_stats_min': np.mean(d['targ_u_stats_min'])},
+                               'v_q_behavior': np.mean(d['v_q_behavior']),
+                               'u_behavior': np.mean(d['u_behavior']),
+                               'v_q_from_actr': np.mean(d['v_q_from_actr']),
+                               'u_from_actr': np.mean(d['u_from_actr']),
+                               'v_q_uniform': np.mean(d['v_q_uniform']),
+                               'u_uniform': np.mean(d['u_uniform'])},
                               step=step)
             wandb.log({'main_eval_len': np.mean(d['main_eval_len']),
                        'maxq_eval_len': np.mean(d['maxq_eval_len']),
