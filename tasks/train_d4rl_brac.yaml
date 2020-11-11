@@ -24,7 +24,7 @@ layer_norm: true
 
 # Optimization
 actor_lr: 1.0e-4
-critic_lr: 1.0e-3
+critic_lr: 3.0e-4
 lr_schedule: 'constant'
 clip_norm: 0.
 wd_scale: 0.

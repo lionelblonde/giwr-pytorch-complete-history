@@ -24,7 +24,7 @@ layer_norm: true
 
 # Optimization
 actor_lr: 1.0e-4
-critic_lr: 1.0e-3
+critic_lr: 3.0e-4
 lr_schedule: 'constant'
 clip_norm: 0.
 wd_scale: 0.
@@ -33,7 +33,7 @@ wd_scale: 0.
 rollout_len: 2
 batch_size: 64
 gamma: 0.99
-mem_size: 100000
+mem_size: 1e6
 noise_type: '"adaptive-param_0.2, ou_0.2"'
 pn_adapt_frequency: 50
 polyak: 0.005

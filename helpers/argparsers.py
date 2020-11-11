@@ -128,10 +128,14 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'cql_use_min_q_loss', default=True)
     boolean_flag(parser, 'cql_use_max_q_loss', default=True)
 
-    parser.add_argument('--ptso_u_scale', type=float, default=1.)
     boolean_flag(parser, 'ptso_use_targ_for_u', default=False)
     parser.add_argument('--ptso_num_mat_updates_per_iter', type=int, default=100)
-    parser.add_argument('--ptso_shaping_type', type=str, choices=['none', 'rnd', 'ube'], default='none')
-    parser.add_argument('--ptso_shaping_scale', type=float, default=1.)
+    parser.add_argument('--ptso_u_scale_p_i', type=float, default=0.)
+    parser.add_argument('--ptso_u_scale_q_min', type=float, default=0.)
+    parser.add_argument('--ptso_u_scale_q_max', type=float, default=0.)
+    boolean_flag(parser, 'ptso_use_v_and_u', default=False)
+    boolean_flag(parser, 'ptso_use_u_inference_time', default=False)
+    parser.add_argument('--ptso_q_min_scale', type=float, default=0.)
+    parser.add_argument('--ptso_q_max_scale', type=float, default=0.)
 
     return parser

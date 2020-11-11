@@ -254,10 +254,11 @@ class PTSOAgent(object):
                 ac = float(self.max_ac) * _actr.sample(ob, sg=True)
                 # Among the 100 values, take the one with the highest Q value (or Z value)
                 q_value = self.crit.QZ(ob, ac).mean(dim=1)
-                # u_value = (self.hps.ptso_u_scale *
-                #            self.crit.wrap_with_u_head(self.crit.phi(ob, ac)).mean(dim=1).clamp(min=1e-6).sqrt())
-                # # Note, mean in case we use a distributional critic
-                # q_value -= u_value
+
+                if self.hps.ptso_use_u_inference_time:
+                    u_value = self.crit.wrap_with_u_head(self.crit.phi(ob, ac)).mean(dim=1).clamp(min=1e-6).sqrt()
+                    q_value -= self.hps.ptso_u_scale_p_i * u_value
+
                 index = q_value.argmax(0)
                 ac = ac[index]
             else:
@@ -282,8 +283,33 @@ class PTSOAgent(object):
         ac_dim = ac.shape[0]
         num_repeat = int(ac_dim / ob_dim)
         _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
-        q = crit.wrap_with_q_head(crit.phi(_ob, ac)).view(ob.shape[0], num_repeat, 1)
-        return q
+        q_value = crit.QZ(_ob, ac).view(ob.shape[0], num_repeat, 1)
+        return q_value
+
+    def q_cb_factory(self, crit, ob, ac, actr, ucb_or_lcb, u_scale):  # ac here just for the shape
+        # By construction, 'ob' and 'ac' have the same shape
+        TILE = 10
+        _ob_tiled = ob.unsqueeze(1).repeat(1, TILE, 1).view(ob.shape[0] * TILE, ob.shape[1])
+        _ac_tiled = float(self.max_ac) * actr.sample(_ob_tiled, sg=True)
+        _ac_untiled = _ac_tiled.view(ac.shape[0], TILE, ac.shape[1])
+        with torch.no_grad():
+            _q_value = crit.QZ(_ob_tiled, _ac_tiled).mean(dim=1)
+            if hasattr(crit, 'u_head'):
+                _u_value = crit.wrap_with_u_head(crit.phi(_ob_tiled, _ac_tiled)).mean(dim=1).clamp(min=1e-6).sqrt()
+                if ucb_or_lcb:
+                    _q_value += u_scale * _u_value
+                else:
+                    _q_value -= u_scale * _u_value
+            _q_value = _q_value.view(ob.shape[0], TILE, 1)
+            if ucb_or_lcb:
+                index = _q_value.argmax(1)
+            else:
+                index = _q_value.argmin(1)
+            optimistic_ac = torch.empty(ac.shape[0], ac.shape[1]).to(self.device)
+            for i in range(ac.shape[0]):
+                optimistic_ac[i, :] = _ac_untiled[i, index[i].cpu().numpy(), :]
+        q_value = crit.QZ(ob, optimistic_ac).view(ob.shape[0], 1, 1)
+        return q_value
 
     def update_actor_critic(self, batch, update_actor, iters_so_far):
         """Train the actor and critic networks
@@ -338,17 +364,17 @@ class PTSOAgent(object):
             metrics['u_max'].append(u_from_actr.max())
             assert not u_from_actr.isnan().any()
 
-            # if True:  # XXX you know what to do
-            #     _new_phi = phi_from_actr.unsqueeze(-1)
-            #     _new_phi_t = torch.transpose(_new_phi, -1, -2)
-            #     inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
-            #     v_q = torch.bmm(torch.bmm(_new_phi_t,
-            #                               inflated_precision),
-            #                     _new_phi).squeeze(-1)
-            #     actr_loss += self.hps.ptso_u_scale * (v_q + ((self.hps.gamma ** 2) * u_from_actr))
-            # else:
-            #     actr_loss += self.hps.ptso_u_scale * u_from_actr
-            actr_loss += self.hps.ptso_u_scale * u_from_actr
+            if self.hps.ptso_u_scale_p_i > 0:
+                if self.hps.ptso_use_v_and_u:
+                    _new_phi = phi_from_actr.unsqueeze(-1)
+                    _new_phi_t = torch.transpose(_new_phi, -1, -2)
+                    inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
+                    v_q = torch.bmm(torch.bmm(_new_phi_t,
+                                              inflated_precision),
+                                    _new_phi).squeeze(-1)
+                    actr_loss += self.hps.ptso_u_scale_p_i * (v_q + ((self.hps.gamma ** 2) * u_from_actr))
+                else:
+                    actr_loss += self.hps.ptso_u_scale_p_i * u_from_actr
 
             actr_loss = actr_loss.mean()
         else:
@@ -385,22 +411,6 @@ class PTSOAgent(object):
         # Compute target QZ estimate
         next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
         # Note, here, always stochastic selection of the target action
-
-        # Shape the reward
-        if iters_so_far >= self.hps.warm_start:  # rewards are not used during the warm-start period anyway
-            with torch.no_grad():
-                if self.hps.ptso_shaping_type == 'ube':
-                    psi = -u_from_actr.clone()
-                    next_psi = -self.crit.wrap_with_u_head(self.crit.phi(next_state, next_action))
-                elif self.hps.ptso_shaping_type == 'rnd':
-                    psi = -self.rnd.get_int_rew(state)
-                    next_psi = -self.rnd.get_int_rew(next_state)
-                else:
-                    raise NotImplementedError("invalid shaping method.")
-                logger.info(f"shaping: mean={psi.mean()}, std={psi.std()}, in [{psi.min()}, {psi.max()}]")
-                reward = (reward +
-                          (self.hps.gamma * self.hps.ptso_shaping_scale * next_psi) -
-                          (self.hps.ptso_shaping_scale * psi))
 
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
@@ -466,6 +476,8 @@ class PTSOAgent(object):
             # Add CQL contribution (rest is pretty much exactly SAC)
             # Actions and log-probabilities
             cql_ac, cql_logp = self.ac_factory(self.actr, state, self.hps.cql_state_inflate)
+            if self.hps.ptso_q_min_scale > 0 or self.hps.ptso_q_max_scale > 0:
+                ptso_ac, ptso_logp = self.ac_factory(self.actr, state, 1)  # do not inflate the state here
             cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, self.hps.cql_state_inflate)
             cql_rand_ac = torch.Tensor(self.hps.batch_size * self.hps.cql_state_inflate,
                                        self.ac_dim).uniform_(-self.max_ac, self.max_ac).to(self.device)
@@ -477,6 +489,21 @@ class PTSOAgent(object):
                 cql_twin_q = self.q_factory(self.twin, state, cql_ac)
                 cql_next_twin_q = self.q_factory(self.twin, state, cql_next_ac)
                 cql_rand_twin_q = self.q_factory(self.twin, state, cql_rand_ac)
+
+            # Q-values associated with actions to emphasize on
+            if self.hps.ptso_q_min_scale > 0:
+                ptso_q_min = self.q_cb_factory(self.crit, state, ptso_ac, self.actr,
+                                               ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min)
+            if self.hps.ptso_q_max_scale > 0:
+                ptso_q_max = self.q_cb_factory(self.crit, state, ptso_ac, self.actr,
+                                               ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max)
+            if self.hps.clipped_double:
+                if self.hps.ptso_q_min_scale > 0:
+                    ptso_twin_q_min = self.q_cb_factory(self.twin, state, ptso_ac, self.actr,
+                                                        ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min)
+                if self.hps.ptso_q_max_scale > 0:
+                    ptso_twin_q_max = self.q_cb_factory(self.twin, state, ptso_ac, self.actr,
+                                                        ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max)
 
             # Concatenate every Q-values estimates into one big vector that we'll later try to shrink
             # The answer to "why are so many Q-values are evaluated here?" is:
@@ -490,26 +517,39 @@ class PTSOAgent(object):
                     cql_next_q - cql_next_logp.detach(),
                     cql_q - cql_logp.detach(),
                 ], dim=1)
+                if self.hps.ptso_q_min_scale > 0:
+                    cql_cat_q = torch.cat([
+                        cql_cat_q,
+                        self.hps.ptso_q_min_scale * (ptso_q_min - ptso_logp.detach())
+                    ], dim=1)
                 if self.hps.clipped_double:
                     cql_cat_twin_q = torch.cat([
                         cql_rand_twin_q - weird_stuff,
                         cql_next_twin_q - cql_next_logp.detach(),
                         cql_twin_q - cql_logp.detach(),
+                        ptso_twin_q_min - ptso_logp.detach(),
                     ], dim=1)
+                    if self.hps.ptso_q_min_scale > 0:
+                        cql_cat_twin_q = torch.cat([
+                            cql_cat_twin_q,
+                            self.hps.ptso_q_min_scale * (ptso_twin_q_min - ptso_logp.detach())
+                        ], dim=1)
             else:
-                cql_cat_q = torch.cat([
-                    q.unsqueeze(1),
-                    cql_q,
-                    cql_next_q,
-                    cql_rand_q,
-                ], dim=1)
-                if self.hps.clipped_double:
-                    cql_cat_twin_q = torch.cat([
-                        twin_q.unsqueeze(1),
-                        cql_twin_q,
-                        cql_next_twin_q,
-                        cql_rand_twin_q,
-                    ], dim=1)
+                # Here for posterity, we always are in the clause above
+                raise ValueError("uncomment the code below to use this clause.")
+                # cql_cat_q = torch.cat([
+                #     q.unsqueeze(1),
+                #     cql_q,
+                #     cql_next_q,
+                #     cql_rand_q,
+                # ], dim=1)
+                # if self.hps.clipped_double:
+                #     cql_cat_twin_q = torch.cat([
+                #         twin_q.unsqueeze(1),
+                #         cql_twin_q,
+                #         cql_next_twin_q,
+                #         cql_rand_twin_q,
+                #     ], dim=1)
             # weirdly, the version 3 does not use the stock Q networks, but no questions asked for now
 
         # Assemble the 3 pieces of the CQL loss
@@ -531,9 +571,13 @@ class PTSOAgent(object):
 
         if self.hps.cql_use_max_q_loss:
             # Piece #2: maximize the Q-function on points in the offline dataset
-            min_crit_loss -= q.mean() * self.hps.cql_min_q_weight
+            min_crit_loss -= (q.mean() * self.hps.cql_min_q_weight)
+            if self.hps.ptso_q_max_scale > 0:
+                min_crit_loss -= (ptso_q_max.mean() * self.hps.ptso_q_max_scale)
             if self.hps.clipped_double:
-                min_twin_loss -= twin_q.mean() * self.hps.cql_min_q_weight
+                min_twin_loss -= (twin_q.mean() * self.hps.cql_min_q_weight)
+                if self.hps.ptso_q_max_scale > 0:
+                    min_twin_loss -= (ptso_twin_q_max.mean() * self.hps.ptso_q_max_scale)
 
             if self.hps.cql_use_adaptive_alpha_pri:
                 min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)
@@ -613,7 +657,7 @@ class PTSOAgent(object):
         with torch.no_grad():
             # Metric when the action is the actor's prediction
             _new_phi_from_actr = self.crit.phi(state, action_from_actr).unsqueeze(-1)
-            _new_phi_t_from_actr = torch.transpose(_new_phi, -1, -2)
+            _new_phi_t_from_actr = torch.transpose(_new_phi_from_actr, -1, -2)
             v_q_from_actr = torch.bmm(torch.bmm(_new_phi_t_from_actr,
                                                 inflated_precision),
                                       _new_phi_from_actr).squeeze(-1)

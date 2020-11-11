@@ -1,7 +1,7 @@
 meta:
   task: 'train'
   benchmark: 'd4rl'
-  algo: 'sac'
+  algo: 'ptso'
 
 resources:
   cuda: true
@@ -31,7 +31,7 @@ wd_scale: 0.
 
 # Algorithm
 rollout_len: 2
-batch_size: 1024
+batch_size: 256
 gamma: 0.99
 mem_size: 2e6
 polyak: 0.005
@@ -43,7 +43,7 @@ popart: false
 
 # TD3
 clipped_double: true
-ensemble_q_lambda: 0.75
+ensemble_q_lambda: 1.
 targ_actor_smoothing: false
 td3_std: 0.2
 td3_c: 0.5
@@ -69,8 +69,27 @@ offline: true
 use_expert_demos: false
 sub_rate: 20
 
-state_dependent_std: false
-use_adaptive_alpha: true
-log_alpha_lr: 3.0e-4
-init_temp_log_alpha: 0.1
-crit_targ_update_freq: 2
+state_dependent_std: true
+warm_start: 2000
+crit_targ_update_freq: 1
+cql_deterministic_backup: false
+cql_use_adaptive_alpha_ent: true
+cql_use_adaptive_alpha_pri: true
+cql_init_temp_log_alpha_ent: 0.
+cql_init_temp_log_alpha_pri: 0.
+cql_targ_lower_bound: 5.
+cql_min_q_weight: 5.
+cql_state_inflate: 10
+cql_use_version_3: true
+cql_use_min_q_loss: true
+cql_use_max_q_loss: true
+
+ptso_use_targ_for_u: false
+ptso_num_mat_updates_per_iter: 100
+ptso_u_scale_p_i: 1.
+ptso_u_scale_q_min: 0.
+ptso_u_scale_q_max: 0.
+ptso_use_v_and_u: false
+ptso_use_u_inference_time: false
+ptso_q_min_scale: 0.
+ptso_q_max_scale: 0.

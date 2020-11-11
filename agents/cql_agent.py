@@ -479,6 +479,7 @@ class CQLAgent(object):
             if self.hps.clipped_double:
                 min_twin_loss -= twin_q.mean() * self.hps.cql_min_q_weight
 
+        if self.hps.cql_use_min_q_loss or self.hps.cql_use_max_q_loss:
             if self.hps.cql_use_adaptive_alpha_pri:
                 min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)
                 if self.hps.clipped_double:

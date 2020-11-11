@@ -1,7 +1,7 @@
 meta:
   task: 'train'
   benchmark: 'd4rl'
-  algo: 'ptso'
+  algo: 'cql'
 
 resources:
   cuda: true
@@ -24,7 +24,7 @@ layer_norm: true
 
 # Optimization
 actor_lr: 1.0e-4
-critic_lr: 1.0e-3
+critic_lr: 3.0e-4
 lr_schedule: 'constant'
 clip_norm: 0.
 wd_scale: 0.
@@ -33,7 +33,7 @@ wd_scale: 0.
 rollout_len: 2
 batch_size: 256
 gamma: 0.99
-mem_size: 1e6
+mem_size: 2e6
 polyak: 0.005
 targ_up_freq: 100
 n_step_returns: false
@@ -72,20 +72,14 @@ sub_rate: 20
 state_dependent_std: true
 warm_start: 2000
 crit_targ_update_freq: 1
-cql_deterministic_backup: true
+cql_deterministic_backup: false
 cql_use_adaptive_alpha_ent: true
 cql_use_adaptive_alpha_pri: true
 cql_init_temp_log_alpha_ent: 0.
 cql_init_temp_log_alpha_pri: 0.
-cql_targ_lower_bound: 1.
+cql_targ_lower_bound: 5.
 cql_min_q_weight: 5.
 cql_state_inflate: 10
 cql_use_version_3: true
 cql_use_min_q_loss: true
 cql_use_max_q_loss: true
-
-ptso_u_scale: 0.
-ptso_use_targ_for_u: false
-ptso_num_mat_updates_per_iter: 100
-ptso_shaping_type: 'none'
-ptso_shaping_scale: 1.
