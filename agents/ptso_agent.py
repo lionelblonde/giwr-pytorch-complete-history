@@ -17,6 +17,7 @@ from agents.rnd import RandomNetworkDistillation
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 TEMPERATURE = 1.0
+TILE = 10
 
 
 class PTSOAgent(object):
@@ -288,7 +289,6 @@ class PTSOAgent(object):
 
     def q_cb_factory(self, crit, ob, ac, actr, ucb_or_lcb, u_scale):  # ac here just for the shape
         # By construction, 'ob' and 'ac' have the same shape
-        TILE = 10
         _ob_tiled = ob.unsqueeze(1).repeat(1, TILE, 1).view(ob.shape[0] * TILE, ob.shape[1])
         _ac_tiled = float(self.max_ac) * actr.sample(_ob_tiled, sg=True)
         _ac_untiled = _ac_tiled.view(ac.shape[0], TILE, ac.shape[1])
@@ -321,6 +321,7 @@ class PTSOAgent(object):
 
         # Update the RND network
         self.rnd.update(batch)
+        logger.info("just updated the rnd estimate")
 
         # Transfer to device
         state = torch.Tensor(batch['obs0']).to(self.device)
@@ -527,7 +528,6 @@ class PTSOAgent(object):
                         cql_rand_twin_q - weird_stuff,
                         cql_next_twin_q - cql_next_logp.detach(),
                         cql_twin_q - cql_logp.detach(),
-                        ptso_twin_q_min - ptso_logp.detach(),
                     ], dim=1)
                     if self.hps.ptso_q_min_scale > 0:
                         cql_cat_twin_q = torch.cat([
@@ -627,52 +627,54 @@ class PTSOAgent(object):
         # We don't use the twin critic past this point, to same on evalutations and matrix multiplications
 
         assert not self.hps.n_step_returns
-
         # Depending on a hyper-parameter, use the target critics in `targ_u` calculation, or not at all here
-        _crit = self.targ_crit if self.hps.ptso_use_targ_for_u else self.crit
+        crit_in_ube_targ = self.targ_crit if self.hps.ptso_use_targ_for_u else self.crit
+        # Depending on a hyper-parameter, use the action from the behavior policy, or from the actor
+        action_in_phi = action if self.hps.ptso_use_behav_ac_in_phi else action_from_actr.detach()
 
         # Create the UBE target
         # Computations done with batch dimension
         with torch.no_grad():
-            _new_phi = self.crit.phi(state, action).unsqueeze(-1)
+            # Assemble the uncertainty bellman target
+            _new_phi = self.crit.phi(state, action_in_phi).unsqueeze(-1)
             _new_phi_t = torch.transpose(_new_phi, -1, -2)
             inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
             v_q = torch.bmm(torch.bmm(_new_phi_t,
                                       inflated_precision),
                             _new_phi).squeeze(-1)
-            u_prime = _crit.wrap_with_u_head(_crit.phi(next_state, next_action))
+            u_prime = crit_in_ube_targ.wrap_with_u_head(crit_in_ube_targ.phi(next_state, next_action))
             targ_u = (v_q + ((self.hps.gamma ** 2) * (1. - done) * u_prime)).clamp(min=0.)
             # Note, we clamp for the target to be non-negative, to urge the prediction to always be non-negative
-            metrics['v_q_behavior'].append(v_q.mean())
-            metrics['u_behavior'].append(self.crit.wrap_with_u_head(self.crit.phi(state, action)).mean())
-
-        u_loss = F.mse_loss(self.crit.wrap_with_u_head(self.crit.phi(state, action).detach()),
-                            targ_u.detach())  # detach, just in case
+        u_pred = self.crit.wrap_with_u_head(self.crit.phi(state, action).detach())  # can onlu update the outpur head
+        u_loss = F.mse_loss(u_pred, targ_u.detach())  # detach, just in case
+        metrics['v_q'].append(v_q.mean())
+        metrics['u_pred'].append(u_pred.mean())
+        metrics['u_loss'].append(u_loss)
 
         self.u_opt.zero_grad()
         u_loss.backward(retain_graph=True)
         self.u_opt.step()
 
-        # Monitoring uncertainty values here and there
-        with torch.no_grad():
-            # Metric when the action is the actor's prediction
-            _new_phi_from_actr = self.crit.phi(state, action_from_actr).unsqueeze(-1)
-            _new_phi_t_from_actr = torch.transpose(_new_phi_from_actr, -1, -2)
-            v_q_from_actr = torch.bmm(torch.bmm(_new_phi_t_from_actr,
-                                                inflated_precision),
-                                      _new_phi_from_actr).squeeze(-1)
-            metrics['v_q_from_actr'].append(v_q_from_actr.mean())
-            metrics['u_from_actr'].append(self.crit.wrap_with_u_head(self.crit.phi(state, action_from_actr)).mean())
-            # Metric when the action is sampled uniformly
-            action_uniform = torch.Tensor(self.hps.batch_size, self.ac_dim).uniform_(-self.max_ac,
-                                                                                     self.max_ac).to(self.device)
-            _new_phi_uniform = self.crit.phi(state, action_uniform).unsqueeze(-1)
-            _new_phi_t_uniform = torch.transpose(_new_phi_uniform, -1, -2)
-            v_q_uniform = torch.bmm(torch.bmm(_new_phi_t_uniform,
-                                              inflated_precision),
-                                    _new_phi_uniform).squeeze(-1)
-            metrics['v_q_uniform'].append(v_q_uniform.mean())
-            metrics['u_uniform'].append(self.crit.wrap_with_u_head(self.crit.phi(state, action_uniform)).mean())
+        # Monitor associated rnd estimate
+        metrics['rnd_score'].append(torch.exp(self.rnd.get_int_rew(state)) - 1.)
+
+        # Monitoring uncertainty values with features evaluated at other actions
+        if iters_so_far % self.hps.eval_frequency == 0:
+            # Note, we usually dump the metrics even if it's not an eval round (legibility),
+            # but this bit it too computationally expensive
+            with torch.no_grad():
+                # Compute the entities of interest with the action in phi sampled uniformly
+                action_uniform = torch.Tensor(self.hps.batch_size, self.ac_dim).uniform_(-self.max_ac,
+                                                                                         self.max_ac).to(self.device)
+                _new_phi_uniform = self.crit.phi(state, action_uniform).unsqueeze(-1)
+                _new_phi_t_uniform = torch.transpose(_new_phi_uniform, -1, -2)
+                v_q_uniform = torch.bmm(torch.bmm(_new_phi_t_uniform,
+                                                  inflated_precision),
+                                        _new_phi_uniform).squeeze(-1)
+                # Keep in the 'no_grad' context, this is just for monitoring
+                u_pred_uniform = self.crit.wrap_with_u_head(self.crit.phi(state, action_uniform).detach()).mean()
+                metrics['v_q_uniform'].append(v_q_uniform.mean())
+                metrics['u_pred_uniform'].append(u_pred_uniform.mean())
 
         # Update the global uncertainty matrix (sigma in UBE, the covariance matrix) according to equation 14 in UBE
         # Computations done without the batch dimension (non-batchable iterative process)

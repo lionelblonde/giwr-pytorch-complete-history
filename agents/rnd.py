@@ -133,13 +133,13 @@ class RandomNetworkDistillation(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics
 
-    def get_int_rew(self, next_state):  # name purposefully explicit
-        if not isinstance(next_state, torch.Tensor):
-            next_state = torch.Tensor(next_state)
+    def get_int_rew(self, state):
+        if not isinstance(state, torch.Tensor):
+            state = torch.Tensor(state)
         # Compute intrinsic reward
         int_rew = F.mse_loss(
-            self.pred_net(next_state),
-            self.targ_net(next_state),
+            self.pred_net(state),
+            self.targ_net(state),
             reduction='none',
         ).mean(dim=-1, keepdim=True).detach()
         # Normalize intrinsic reward

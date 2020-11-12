@@ -180,7 +180,7 @@ class Spawner(object):
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u',
                           'cql_use_min_q_loss', 'cql_use_max_q_loss',
-                          'ptso_use_v_and_u', 'ptso_use_u_inference_time']
+                          'ptso_use_v_and_u', 'ptso_use_u_inference_time', 'ptso_use_behav_ac_in_phi']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -367,6 +367,7 @@ class Spawner(object):
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
                 'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),
+                'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
             }
         else:
             # No search, fixed hyper-parameters
@@ -477,6 +478,7 @@ class Spawner(object):
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
                 'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),
+                'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
             }
 
         # Duplicate for each environment

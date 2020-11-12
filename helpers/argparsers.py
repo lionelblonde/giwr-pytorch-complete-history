@@ -137,5 +137,6 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'ptso_use_u_inference_time', default=False)
     parser.add_argument('--ptso_q_min_scale', type=float, default=0.)
     parser.add_argument('--ptso_q_max_scale', type=float, default=0.)
+    boolean_flag(parser, 'ptso_use_behav_ac_in_phi', default=False)
 
     return parser
