@@ -53,6 +53,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
+    boolean_flag(parser, 'obs_norm', default=False)
     boolean_flag(parser, 'ret_norm', default=False)
     boolean_flag(parser, 'popart', default=False)
 
@@ -138,5 +139,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--ptso_q_min_scale', type=float, default=0.)
     parser.add_argument('--ptso_q_max_scale', type=float, default=0.)
     boolean_flag(parser, 'ptso_use_behav_ac_in_phi', default=False)
+    boolean_flag(parser, 'ptso_use_rnd_monitoring', default=False)
+    boolean_flag(parser, 'ptso_use_unexpected_uncertainty', default=True)
 
     return parser

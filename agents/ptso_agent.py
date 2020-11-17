@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.utils as U
 import torch.nn.functional as F
+from torch import autograd
 
 from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
@@ -17,7 +18,6 @@ from agents.rnd import RandomNetworkDistillation
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 TEMPERATURE = 1.0
-TILE = 10
 
 
 class PTSOAgent(object):
@@ -49,7 +49,10 @@ class PTSOAgent(object):
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
 
         # Create observation normalizer that maintains running statistics
-        self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
+        if self.hps.obs_norm:
+            self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=not self.hps.cuda)  # no mpi sharing when using cuda
+        else:
+            self.rms_obs = None
 
         assert self.hps.ret_norm or not self.hps.popart
         if self.hps.ret_norm:
@@ -121,8 +124,7 @@ class PTSOAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.u_opt = torch.optim.RMSprop(self.crit.u_trainable_params,
-                                         lr=1e-3)
+        self.u_opt = torch.optim.RMSprop(self.crit.u_trainable_params, lr=1e-3)
 
         if self.hps.cql_use_adaptive_alpha_ent:  # cql choice: same lr as actor
             self.log_alpha_ent_opt = torch.optim.Adam([self.log_alpha_ent],
@@ -139,8 +141,9 @@ class PTSOAgent(object):
             total_num_steps=self.hps.num_steps,
         )
 
-        # Create RND networks
-        self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
+        if self.hps.ptso_use_rnd_monitoring:
+            # Create RND networks
+            self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
 
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
@@ -218,8 +221,8 @@ class PTSOAgent(object):
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
 
-        def _patcher(x, y, z):
-            return self.patcher(x, y, z).detach().cpu().numpy()  # redundant detach
+        # def _patcher(x, y, z):
+        #     return self.patcher(x, y, z).detach().cpu().numpy()  # redundant detach
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -287,11 +290,21 @@ class PTSOAgent(object):
         q_value = crit.QZ(_ob, ac).view(ob.shape[0], num_repeat, 1)
         return q_value
 
+    def u_factory(self, crit, ob, ac):
+        ob_dim = ob.shape[0]
+        ac_dim = ac.shape[0]
+        num_repeat = int(ac_dim / ob_dim)
+        _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
+        u_value = crit.wrap_with_u_head(self.crit.phi(_ob, ac)).view(ob.shape[0], num_repeat, 1)
+        return u_value
+
     def q_cb_factory(self, crit, ob, ac, actr, ucb_or_lcb, u_scale):  # ac here just for the shape
         # By construction, 'ob' and 'ac' have the same shape
-        _ob_tiled = ob.unsqueeze(1).repeat(1, TILE, 1).view(ob.shape[0] * TILE, ob.shape[1])
+        _ob_tiled = ob.unsqueeze(1).repeat(1, self.hps.cql_state_inflate, 1).view(
+            ob.shape[0] * self.hps.cql_state_inflate, ob.shape[1]
+        )
         _ac_tiled = float(self.max_ac) * actr.sample(_ob_tiled, sg=True)
-        _ac_untiled = _ac_tiled.view(ac.shape[0], TILE, ac.shape[1])
+        _ac_untiled = _ac_tiled.view(ac.shape[0], self.hps.cql_state_inflate, ac.shape[1])
         with torch.no_grad():
             _q_value = crit.QZ(_ob_tiled, _ac_tiled).mean(dim=1)
             if hasattr(crit, 'u_head'):
@@ -300,14 +313,21 @@ class PTSOAgent(object):
                     _q_value += u_scale * _u_value
                 else:
                     _q_value -= u_scale * _u_value
-            _q_value = _q_value.view(ob.shape[0], TILE, 1)
+            _q_value = _q_value.view(ob.shape[0], self.hps.cql_state_inflate, 1)
             if ucb_or_lcb:
                 index = _q_value.argmax(1)
             else:
                 index = _q_value.argmin(1)
-            optimistic_ac = torch.empty(ac.shape[0], ac.shape[1]).to(self.device)
-            for i in range(ac.shape[0]):
-                optimistic_ac[i, :] = _ac_untiled[i, index[i].cpu().numpy(), :]
+            optimistic_ac = torch.gather(_ac_untiled, 1, index.unsqueeze(-1).expand(-1, -1, ac.shape[1])).view(
+                ac.shape[0], ac.shape[1]
+            )
+
+            # # Sanity-check, to assert that the gather operation does what we want
+            # _optimistic_ac = torch.empty(ac.shape[0], ac.shape[1]).to(self.device)
+            # for i in range(ac.shape[0]):
+            #     _optimistic_ac[i, :] = _ac_untiled[i, index[i], :]
+            # assert torch.all(torch.eq(_optimistic_ac, optimistic_ac))
+
         q_value = crit.QZ(ob, optimistic_ac).view(ob.shape[0], 1, 1)
         return q_value
 
@@ -319,9 +339,10 @@ class PTSOAgent(object):
         # Container for all the metrics
         metrics = defaultdict(list)
 
-        # Update the RND network
-        self.rnd.update(batch)
-        logger.info("just updated the rnd estimate")
+        if self.hps.ptso_use_rnd_monitoring:
+            # Update the RND network
+            self.rnd.update(batch)
+            logger.info("just updated the rnd estimate")
 
         # Transfer to device
         state = torch.Tensor(batch['obs0']).to(self.device)
@@ -338,71 +359,6 @@ class PTSOAgent(object):
 
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
-
-        # Only update the policy after a certain number of iteration (CQL codebase: 20000)
-        # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
-
-        # Actor loss
-        if iters_so_far >= self.hps.warm_start:
-            # Use full-blown loss
-            q_from_actr = self.crit.QZ(state, action_from_actr)
-            if self.hps.clipped_double:
-                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
-                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
-            metrics['q_mean'].append(q_from_actr.mean())
-            metrics['q_std'].append(q_from_actr.std())
-            metrics['q_min'].append(q_from_actr.min())
-            metrics['q_max'].append(q_from_actr.max())
-            actr_loss = (self.alpha_ent * log_prob) - q_from_actr
-
-            phi_from_actr = self.crit.phi(state, action_from_actr)
-            u_from_actr = self.crit.wrap_with_u_head(phi_from_actr).clamp(min=1e-6).sqrt()
-            # Note, we clamp for the value to be non-negative, for the square-root to always be defined
-            # We clip with an epsilon strictly greater than zero because of sqrt's derivative at zero
-            metrics['u_mean'].append(u_from_actr.mean())
-            metrics['u_std'].append(u_from_actr.std())
-            metrics['u_min'].append(u_from_actr.min())
-            metrics['u_max'].append(u_from_actr.max())
-            assert not u_from_actr.isnan().any()
-
-            if self.hps.ptso_u_scale_p_i > 0:
-                if self.hps.ptso_use_v_and_u:
-                    _new_phi = phi_from_actr.unsqueeze(-1)
-                    _new_phi_t = torch.transpose(_new_phi, -1, -2)
-                    inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
-                    v_q = torch.bmm(torch.bmm(_new_phi_t,
-                                              inflated_precision),
-                                    _new_phi).squeeze(-1)
-                    actr_loss += self.hps.ptso_u_scale_p_i * (v_q + ((self.hps.gamma ** 2) * u_from_actr))
-                else:
-                    actr_loss += self.hps.ptso_u_scale_p_i * u_from_actr
-
-            actr_loss = actr_loss.mean()
-        else:
-            # Use behavioral cloning losses
-            actr_loss = (F.mse_loss(self.actr.logp(state, action).detach(), log_prob) +
-                         F.mse_loss(action, action_from_actr))
-        metrics['actr_loss'].append(actr_loss)
-
-        self.actr_opt.zero_grad()
-        if self.hps.cql_use_adaptive_alpha_ent:
-            actr_loss.backward(retain_graph=True)  # double-checked: OK
-        else:
-            actr_loss.backward()
-        average_gradients(self.actr, self.device)
-        if self.hps.clip_norm > 0:
-            U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
-        self.actr_opt.step()
-
-        _lr = self.actr_sched.step(steps_so_far=iters_so_far)
-        logger.info(f"lr is {_lr} after {iters_so_far} iters")
-
-        if self.hps.cql_use_adaptive_alpha_ent:
-            alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
-            self.log_alpha_ent_opt.zero_grad()
-            alpha_ent_loss.backward()
-            self.log_alpha_ent_opt.step()
-            metrics['alpha_ent_loss'].append(alpha_ent_loss)
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
@@ -493,18 +449,22 @@ class PTSOAgent(object):
 
             # Q-values associated with actions to emphasize on
             if self.hps.ptso_q_min_scale > 0:
-                ptso_q_min = self.q_cb_factory(self.crit, state, ptso_ac, self.actr,
-                                               ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min)
+                ptso_q_min = self.q_cb_factory(
+                    self.crit, state, ptso_ac, self.actr, ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min
+                )
             if self.hps.ptso_q_max_scale > 0:
-                ptso_q_max = self.q_cb_factory(self.crit, state, ptso_ac, self.actr,
-                                               ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max)
+                ptso_q_max = self.q_cb_factory(
+                    self.crit, state, ptso_ac, self.actr, ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max
+                )
             if self.hps.clipped_double:
                 if self.hps.ptso_q_min_scale > 0:
-                    ptso_twin_q_min = self.q_cb_factory(self.twin, state, ptso_ac, self.actr,
-                                                        ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min)
+                    ptso_twin_q_min = self.q_cb_factory(
+                        self.twin, state, ptso_ac, self.actr, ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min
+                    )
                 if self.hps.ptso_q_max_scale > 0:
-                    ptso_twin_q_max = self.q_cb_factory(self.twin, state, ptso_ac, self.actr,
-                                                        ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max)
+                    ptso_twin_q_max = self.q_cb_factory(
+                        self.twin, state, ptso_ac, self.actr, ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max
+                    )
 
             # Concatenate every Q-values estimates into one big vector that we'll later try to shrink
             # The answer to "why are so many Q-values are evaluated here?" is:
@@ -598,6 +558,40 @@ class PTSOAgent(object):
         if self.hps.clipped_double:
             twin_loss += min_twin_loss
 
+        # self.hps.ptso_use_grad_pen_phi = True
+        # self.hps.ptso_use_grad_pen_u = True
+        # self.hps.state_only = True
+        # self.hps.grad_pen_scale_s = 5.
+        # self.hps.grad_pen_scale_a = 5.
+        # self.hps.ptso_grad_pen_targ_s = 0.5
+        # self.hps.ptso_grad_pen_targ_a = 2.
+
+        # Use `self.crit.parameters()` as parameters in `u_opt`
+
+        # if self.hps.ptso_use_grad_pen_phi:
+        #     # Add gradient penalty to regularize the phi embedding
+
+        #     crit_phi_grad_pen_s, crit_phi_grad_pen_a = self.grad_pen(
+        #         fa=self.crit.phi,
+        #         state=state,
+        #         action_1=action,
+        #         action_2=action_from_actr.detach(),
+        #     )
+        #     crit_loss += self.hps.grad_pen_scale_s * crit_phi_grad_pen_s
+        #     if not self.hps.state_only:
+        #         crit_loss += self.hps.grad_pen_scale_a * crit_phi_grad_pen_a
+
+        #     if self.hps.clipped_double:
+        #         twin_phi_grad_pen_s, twin_phi_grad_pen_a = self.grad_pen(
+        #             fa=self.twin.phi,
+        #             state=state,
+        #             action_1=action,
+        #             action_2=action_from_actr.detach(),
+        #         )
+        #         twin_loss += self.hps.grad_pen_scale_s * twin_phi_grad_pen_s
+        #         if not self.hps.state_only:
+        #             twin_loss += self.hps.grad_pen_scale_a * twin_phi_grad_pen_a
+
         self.crit_opt.zero_grad()
         crit_loss.backward(retain_graph=True)
         # It is here necessary to retain the graph because the other Q function(s) in the ensemble re-use it
@@ -651,12 +645,26 @@ class PTSOAgent(object):
         metrics['u_pred'].append(u_pred.mean())
         metrics['u_loss'].append(u_loss)
 
+        # if self.hps.ptso_use_grad_pen_u:
+        #     # Add gradient penalty to regularize the phi embedding
+
+        #     crit_u_grad_pen_s, crit_u_grad_pen_a = self.grad_pen(
+        #         fa=lambda s, a: self.crit.wrap_with_u_head(self.crit.phi(s, a)),  # not detaching here
+        #         state=state,
+        #         action_1=action,
+        #         action_2=action_from_actr.detach(),
+        #     )
+        #     u_loss += self.hps.grad_pen_scale_s * crit_u_grad_pen_s
+        #     if not self.hps.state_only:
+        #         u_loss += self.hps.grad_pen_scale_a * crit_u_grad_pen_a
+
         self.u_opt.zero_grad()
         u_loss.backward(retain_graph=True)
         self.u_opt.step()
 
-        # Monitor associated rnd estimate
-        metrics['rnd_score'].append(torch.exp(self.rnd.get_int_rew(state)) - 1.)
+        if self.hps.ptso_use_rnd_monitoring:
+            # Monitor associated rnd estimate
+            metrics['rnd_score'].append(torch.exp(self.rnd.get_int_rew(state)) - 1.)
 
         # Monitoring uncertainty values with features evaluated at other actions
         if iters_so_far % self.hps.eval_frequency == 0:
@@ -696,10 +704,120 @@ class PTSOAgent(object):
         if iters_so_far % self.hps.crit_targ_update_freq == 0:
             self.update_target_net()
 
+        # Only update the policy after a certain number of iteration (CQL codebase: 20000)
+        # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
+
+        # Actor loss
+        if iters_so_far >= self.hps.warm_start:
+            # Use full-blown loss
+            q_from_actr = self.crit.QZ(state, action_from_actr)
+            if self.hps.clipped_double:
+                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
+                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+            metrics['q_mean'].append(q_from_actr.mean())
+            metrics['q_std'].append(q_from_actr.std())
+            metrics['q_min'].append(q_from_actr.min())
+            metrics['q_max'].append(q_from_actr.max())
+            actr_loss = (self.alpha_ent * log_prob) - q_from_actr
+
+            phi_from_actr = self.crit.phi(state, action_from_actr)
+            u_from_actr = self.crit.wrap_with_u_head(phi_from_actr).clamp(min=1e-6).sqrt()
+            # Note, we clamp for the value to be non-negative, for the square-root to always be defined
+            # We clip with an epsilon strictly greater than zero because of sqrt's derivative at zero
+            metrics['u_mean'].append(u_from_actr.mean())
+            metrics['u_std'].append(u_from_actr.std())
+            metrics['u_min'].append(u_from_actr.min())
+            metrics['u_max'].append(u_from_actr.max())
+
+            # # Sanity-check
+            # assert not u_from_actr.isnan().any()
+
+            if self.hps.ptso_use_unexpected_uncertainty:
+                # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
+                expected_u_from_actr = self.u_factory(self.crit, state, cql_ac).mean(dim=1).detach()
+                u_from_actr -= expected_u_from_actr
+
+            if self.hps.ptso_u_scale_p_i > 0:
+                if self.hps.ptso_use_v_and_u:
+                    _new_phi = phi_from_actr.unsqueeze(-1)
+                    _new_phi_t = torch.transpose(_new_phi, -1, -2)
+                    inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
+                    v_q = torch.bmm(torch.bmm(_new_phi_t,
+                                              inflated_precision),
+                                    _new_phi).squeeze(-1)
+                    actr_loss += self.hps.ptso_u_scale_p_i * (v_q + ((self.hps.gamma ** 2) * u_from_actr))
+                else:
+                    actr_loss += self.hps.ptso_u_scale_p_i * u_from_actr
+
+            actr_loss = actr_loss.mean()
+        else:
+            # Use behavioral cloning losses
+            actr_loss = (F.mse_loss(self.actr.logp(state, action).detach(), log_prob) +
+                         F.mse_loss(action, action_from_actr))
+        metrics['actr_loss'].append(actr_loss)
+
+        self.actr_opt.zero_grad()
+        if self.hps.cql_use_adaptive_alpha_ent:
+            actr_loss.backward(retain_graph=True)  # double-checked: OK
+        else:
+            actr_loss.backward()
+        average_gradients(self.actr, self.device)
+        if self.hps.clip_norm > 0:
+            U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
+        self.actr_opt.step()
+
+        _lr = self.actr_sched.step(steps_so_far=iters_so_far)
+        logger.info(f"lr is {_lr} after {iters_so_far} iters")
+
+        if self.hps.cql_use_adaptive_alpha_ent:
+            alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
+            self.log_alpha_ent_opt.zero_grad()
+            alpha_ent_loss.backward()
+            self.log_alpha_ent_opt.step()
+            metrics['alpha_ent_loss'].append(alpha_ent_loss)
+
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': _lr}
 
         return metrics, lrnows
+
+    def grad_pen(self, fa, state, action_1, action_2):
+        """Define the gradient penalty regularizer"""
+        # Create the states to apply the contraint on
+        eps_s = state.clone().detach().data.normal_(0, 10)
+        zeta_state = state + eps_s
+        zeta_state.requires_grad = True
+        # Create the actions to apply the contraint on
+        eps_a = torch.rand(action_1.size(0), 1).to(self.device)
+        zeta_action = eps_a * action_1 + ((1. - eps_a) * action_2)
+        zeta_action.requires_grad = True
+        # Create the operation of interest
+        score = fa(zeta_state, zeta_action)
+        # Define the input(s) w.r.t. to take the gradient
+        inputs = [zeta_state]
+        if not self.hps.state_only:
+            inputs.append(zeta_action)
+        # Get the gradient of this operation with respect to its inputs
+        grads = autograd.grad(
+            outputs=score,
+            inputs=inputs,
+            only_inputs=True,
+            grad_outputs=[torch.ones_like(score)],
+            retain_graph=True,
+            create_graph=True,
+            allow_unused=self.hps.state_only,
+        )
+        # Return the gradient penalties
+        grads_norm_s = list(grads)[0].norm(2, dim=-1)
+        grad_pen_s = (grads_norm_s - self.hps.ptso_grad_pen_targ_s).pow(2).mean()
+        logger.info(f"grad pen s: {grad_pen_s}")
+        if self.hps.state_only:
+            return grad_pen_s, None
+        else:
+            grads_norm_a = list(grads)[1].norm(2, dim=-1)
+            grad_pen_a = (grads_norm_a - self.hps.ptso_grad_pen_targ_a).pow(2).mean()
+            logger.info(f"grad pen a: {grad_pen_a}")
+            return grad_pen_s, grad_pen_a
 
     def update_target_net(self):
         """Update the target networks"""

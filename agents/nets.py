@@ -84,7 +84,8 @@ class Actor(nn.Module):
         return self.forward(ob)
 
     def forward(self, ob):
-        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(ob)
         ac = float(self.max_ac) * torch.tanh(self.head(x))
         return ac
@@ -162,7 +163,8 @@ class Critic(nn.Module):
         return self.head(x)
 
     def forward(self, ob, ac):
-        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
         return x
@@ -217,7 +219,8 @@ class ActorPhi(nn.Module):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
         a = self.hps.bcq_phi * float(self.max_ac) * torch.tanh(self.head(x))
@@ -280,7 +283,8 @@ class ActorVAE(nn.Module):
 
     def decode(self, ob, z=None):
         """Used in BCQ"""
-        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         if z is None:
             # When z is not provided as input (or is literally None), sample it (and clip it)
             # z effectively sampled from a truncated (0, 1) isotropic normal distribution
@@ -295,7 +299,8 @@ class ActorVAE(nn.Module):
 
     def decodex(self, ob, z=None, expansion=4):
         """Used in BEAR"""
-        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         if z is None:
             # When z is not provided as input (or is literally None), sample it (and clip it)
             # z effectively sampled from a truncated (0, 1) isotropic normal distribution
@@ -310,7 +315,8 @@ class ActorVAE(nn.Module):
 
     def forward(self, ob, ac):
         unnormalized_ob = ob.clone()
-        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         # Encode
         x = self.encoder(x)
@@ -456,7 +462,8 @@ class TanhGaussActor(nn.Module):
         raise NotImplementedError
 
     def forward(self, ob):
-        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(ob)
         if self.hps.state_dependent_std:
             ac_mean, ac_log_std = self.head(x).chunk(2, dim=-1)

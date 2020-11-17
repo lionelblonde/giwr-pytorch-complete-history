@@ -40,6 +40,7 @@ polyak: 0.005
 targ_up_freq: 100
 n_step_returns: true
 lookahead: 10
+obs_norm: false
 ret_norm: false
 popart: false
 

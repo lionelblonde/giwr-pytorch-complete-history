@@ -73,7 +73,10 @@ class DDPGAgent(object):
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
 
         # Create observation normalizer that maintains running statistics
-        self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
+        if self.hps.obs_norm:
+            self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=not self.hps.cuda)  # no mpi sharing when using cuda
+        else:
+            self.rms_obs = None
 
         assert self.hps.ret_norm or not self.hps.popart
         assert not (self.hps.use_c51 and self.hps.ret_norm)

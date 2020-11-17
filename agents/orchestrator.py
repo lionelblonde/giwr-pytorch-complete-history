@@ -375,7 +375,8 @@ def learn(args,
                             d['v_q'].append(metrics['v_q'])
                             d['u_pred'].append(metrics['u_pred'])
                             d['u_losses'].append(metrics['u_loss'])  # careful, key mismatch
-                            d['rnd_score'].append(metrics['rnd_score'])
+                            if agent.hps.ptso_use_rnd_monitoring:
+                                d['rnd_score'].append(metrics['rnd_score'])
                             d['v_q_uniform'].append(metrics['v_q_uniform'])
                             d['u_pred_uniform'].append(metrics['u_pred_uniform'])
                     if agent.hps.clipped_double:
@@ -429,7 +430,8 @@ def learn(args,
                     logger.record_tabular('u_stats_max', np.mean(d['u_stats_max']))
                     logger.record_tabular('v_q', np.mean(d['v_q']))
                     logger.record_tabular('u_pred', np.mean(d['u_pred']))
-                    logger.record_tabular('rnd_score', np.mean(d['rnd_score']))
+                    if agent.hps.ptso_use_rnd_monitoring:
+                        logger.record_tabular('rnd_score', np.mean(d['rnd_score']))
                     logger.record_tabular('v_q_uniform', np.mean(d['v_q_uniform']))
                     logger.record_tabular('u_pred_uniform', np.mean(d['u_pred_uniform']))
             logger.record_tabular('main_eval_len', np.mean(d['main_eval_len']))
@@ -477,10 +479,12 @@ def learn(args,
                                'v_q': np.mean(d['v_q']),
                                'u_pred': np.mean(d['u_pred']),
                                'u_loss': np.mean(d['u_losses']),
-                               'rnd_score': np.mean(d['rnd_score']),
                                'v_q_uniform': np.mean(d['v_q_uniform']),
                                'u_pred_uniform': np.mean(d['u_pred_uniform'])},
                               step=step)
+                    if agent.hps.ptso_use_rnd_monitoring:
+                        wandb.log({'rnd_score': np.mean(d['rnd_score'])},
+                                  step=step)
             wandb.log({'main_eval_len': np.mean(d['main_eval_len']),
                        'maxq_eval_len': np.mean(d['maxq_eval_len']),
                        'main_eval_env_ret': np.mean(d['main_eval_env_ret']),

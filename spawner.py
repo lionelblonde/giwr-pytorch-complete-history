@@ -173,19 +173,23 @@ class Spawner(object):
 
         # Write out the boolean arguments (using the 'boolean_flag' function)
         self.bool_args = ['cuda', 'render', 'record', 'layer_norm',
-                          'prioritized_replay', 'ranked', 'unreal', 'n_step_returns', 'ret_norm', 'popart',
+                          'prioritized_replay', 'ranked', 'unreal', 'n_step_returns', 'obs_norm', 'ret_norm', 'popart',
                           'clipped_double', 'targ_actor_smoothing', 'use_c51', 'use_qr',
                           'offline', 'use_expert_demos', 'state_dependent_std', 'use_adaptive_alpha',
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u',
                           'cql_use_min_q_loss', 'cql_use_max_q_loss',
-                          'ptso_use_v_and_u', 'ptso_use_u_inference_time', 'ptso_use_behav_ac_in_phi']
+                          'ptso_use_v_and_u', 'ptso_use_u_inference_time', 'ptso_use_behav_ac_in_phi',
+                          'ptso_use_rnd_monitoring', 'ptso_use_unexpected_uncertainty']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
-            calibers = dict(short='0-06:00:00', long='0-12:00:00',  # partition: 'shared-EL7'
-                            verylong='2-00:00:00', veryverylong='4-00:00:00')  # partition: 'mono-EL7'
+            calibers = dict(short='0-06:00:00',  # partition: 'shared-EL7'
+                            long='0-12:00:00',
+                            verylong='1-00:00:00',  # partition: 'mono-EL7'
+                            veryverylong='2-00:00:00',
+                            veryveryverylong='4-00:00:00')
             self.duration = calibers[self.args.caliber]  # intented KeyError trigger if invalid caliber
             if 'verylong' in self.args.caliber:
                 self.partition = 'mono-EL7'
@@ -299,6 +303,7 @@ class Spawner(object):
                 'targ_up_freq': np.random.choice([10, 1000]),
                 'n_step_returns': self.config.get('n_step_returns', False),
                 'lookahead': np.random.choice([5, 10, 20, 40, 60]),
+                'obs_norm': self.config.get('obs_norm', False),
                 'ret_norm': self.config.get('ret_norm', False),
                 'popart': self.config.get('popart', False),
 
@@ -368,6 +373,8 @@ class Spawner(object):
                 'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
                 'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),
                 'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
+                'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
+                'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
             }
         else:
             # No search, fixed hyper-parameters
@@ -410,6 +417,7 @@ class Spawner(object):
                 'targ_up_freq': self.config.get('targ_up_freq', 100),
                 'n_step_returns': self.config.get('n_step_returns', False),
                 'lookahead': self.config.get('lookahead', 10),
+                'obs_norm': self.config.get('obs_norm', False),
                 'ret_norm': self.config.get('ret_norm', False),
                 'popart': self.config.get('popart', False),
 
@@ -479,6 +487,8 @@ class Spawner(object):
                 'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
                 'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),
                 'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
+                'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
+                'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
             }
 
         # Duplicate for each environment

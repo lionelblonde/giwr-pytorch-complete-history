@@ -42,7 +42,8 @@ class PredNet(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
 
     def forward(self, obs):
-        obs = self.rms_obs.standardize(obs).clamp(*STANDARDIZED_OB_CLAMPS)
+        if self.rms_obs is not None:
+            obs = self.rms_obs.standardize(obs).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(obs)
         return x
 
