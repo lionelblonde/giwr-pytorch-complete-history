@@ -181,7 +181,8 @@ class Spawner(object):
                           'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u',
                           'cql_use_min_q_loss', 'cql_use_max_q_loss',
                           'ptso_use_v_and_u', 'ptso_use_u_inference_time', 'ptso_use_behav_ac_in_phi',
-                          'ptso_use_rnd_monitoring', 'ptso_use_unexpected_uncertainty']
+                          'ptso_use_rnd_monitoring', 'ptso_use_unexpected_uncertainty',
+                          'ptso_use_or_monitor_grad_pen']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -375,6 +376,11 @@ class Spawner(object):
                 'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
+                'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
+                'ptso_grad_pen_scale_s': self.config.get('ptso_grad_pen_scale_s', 0.),
+                'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),
+                'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
+                'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
             }
         else:
             # No search, fixed hyper-parameters
@@ -489,6 +495,11 @@ class Spawner(object):
                 'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
+                'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
+                'ptso_grad_pen_scale_s': self.config.get('ptso_grad_pen_scale_s', 0.),
+                'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),
+                'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
+                'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
             }
 
         # Duplicate for each environment

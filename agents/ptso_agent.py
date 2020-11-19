@@ -558,39 +558,49 @@ class PTSOAgent(object):
         if self.hps.clipped_double:
             twin_loss += min_twin_loss
 
-        # self.hps.ptso_use_grad_pen_phi = True
-        # self.hps.ptso_use_grad_pen_u = True
-        # self.hps.state_only = True
-        # self.hps.grad_pen_scale_s = 5.
-        # self.hps.grad_pen_scale_a = 5.
-        # self.hps.ptso_grad_pen_targ_s = 0.5
-        # self.hps.ptso_grad_pen_targ_a = 2.
+        if self.hps.ptso_use_or_monitor_grad_pen:
+            # Add (or just monitor) gradient penalties to regularize the phi embedding
 
-        # Use `self.crit.parameters()` as parameters in `u_opt`
+            # Note, we usually dump the metrics even if it's not an eval round (legibility),
+            # but this bit it too computationally expensive
+            if self.hps.ptso_grad_pen_scale_s > 0 or self.hps.ptso_grad_pen_scale_a > 0:
+                # Use one or two gradient penalties in training
+                crit_grad_pen_s, crit_grad_pen_a, crit_grads_norm_s, crit_grads_norm_a = self.grad_pen(
+                    fa=self.crit.phi,
+                    state=state,
+                    action_1=action,
+                    action_2=action_from_actr.detach(),
+                )
+                metrics['phi_gradnorm_s'].append(crit_grads_norm_s.mean())
+                metrics['phi_gradnorm_a'].append(crit_grads_norm_a.mean())
+                if self.hps.ptso_grad_pen_scale_s > 0:
+                    crit_loss += self.hps.ptso_grad_pen_scale_s * crit_grad_pen_s.mean()
+                if self.hps.ptso_grad_pen_scale_a > 0:
+                    crit_loss += self.hps.ptso_grad_pen_scale_a * crit_grad_pen_a.mean()
 
-        # if self.hps.ptso_use_grad_pen_phi:
-        #     # Add gradient penalty to regularize the phi embedding
-
-        #     crit_phi_grad_pen_s, crit_phi_grad_pen_a = self.grad_pen(
-        #         fa=self.crit.phi,
-        #         state=state,
-        #         action_1=action,
-        #         action_2=action_from_actr.detach(),
-        #     )
-        #     crit_loss += self.hps.grad_pen_scale_s * crit_phi_grad_pen_s
-        #     if not self.hps.state_only:
-        #         crit_loss += self.hps.grad_pen_scale_a * crit_phi_grad_pen_a
-
-        #     if self.hps.clipped_double:
-        #         twin_phi_grad_pen_s, twin_phi_grad_pen_a = self.grad_pen(
-        #             fa=self.twin.phi,
-        #             state=state,
-        #             action_1=action,
-        #             action_2=action_from_actr.detach(),
-        #         )
-        #         twin_loss += self.hps.grad_pen_scale_s * twin_phi_grad_pen_s
-        #         if not self.hps.state_only:
-        #             twin_loss += self.hps.grad_pen_scale_a * twin_phi_grad_pen_a
+                if self.hps.clipped_double:
+                    if self.hps.ptso_grad_pen_scale_s > 0 or self.hps.ptso_grad_pen_scale_a > 0:
+                        twin_grad_pen_s, twin_grad_pen_a, twin_grads_norm_s, twin_grads_norm_a = self.grad_pen(
+                            fa=self.twin.phi,
+                            state=state,
+                            action_1=action,
+                            action_2=action_from_actr.detach(),
+                        )
+                    if self.hps.ptso_grad_pen_scale_s > 0:
+                        twin_loss += self.hps.ptso_grad_pen_scale_s * twin_grad_pen_s.mean()
+                    if self.hps.ptso_grad_pen_scale_a > 0:
+                        twin_loss += self.hps.ptso_grad_pen_scale_a * twin_grad_pen_a.mean()
+            else:
+                if iters_so_far % self.hps.eval_frequency == 0:
+                    # Just monitor the gradient norms' values
+                    _, _, crit_grads_norm_s, crit_grads_norm_a = self.grad_pen(
+                        fa=self.crit.phi,
+                        state=state,
+                        action_1=action,
+                        action_2=action_from_actr.detach(),
+                    )
+                    metrics['phi_gradnorm_s'].append(crit_grads_norm_s.mean())
+                    metrics['phi_gradnorm_a'].append(crit_grads_norm_a.mean())
 
         self.crit_opt.zero_grad()
         crit_loss.backward(retain_graph=True)
@@ -644,19 +654,6 @@ class PTSOAgent(object):
         metrics['v_q'].append(v_q.mean())
         metrics['u_pred'].append(u_pred.mean())
         metrics['u_loss'].append(u_loss)
-
-        # if self.hps.ptso_use_grad_pen_u:
-        #     # Add gradient penalty to regularize the phi embedding
-
-        #     crit_u_grad_pen_s, crit_u_grad_pen_a = self.grad_pen(
-        #         fa=lambda s, a: self.crit.wrap_with_u_head(self.crit.phi(s, a)),  # not detaching here
-        #         state=state,
-        #         action_1=action,
-        #         action_2=action_from_actr.detach(),
-        #     )
-        #     u_loss += self.hps.grad_pen_scale_s * crit_u_grad_pen_s
-        #     if not self.hps.state_only:
-        #         u_loss += self.hps.grad_pen_scale_a * crit_u_grad_pen_a
 
         self.u_opt.zero_grad()
         u_loss.backward(retain_graph=True)
@@ -794,9 +791,7 @@ class PTSOAgent(object):
         # Create the operation of interest
         score = fa(zeta_state, zeta_action)
         # Define the input(s) w.r.t. to take the gradient
-        inputs = [zeta_state]
-        if not self.hps.state_only:
-            inputs.append(zeta_action)
+        inputs = [zeta_state, zeta_action]
         # Get the gradient of this operation with respect to its inputs
         grads = autograd.grad(
             outputs=score,
@@ -805,19 +800,14 @@ class PTSOAgent(object):
             grad_outputs=[torch.ones_like(score)],
             retain_graph=True,
             create_graph=True,
-            allow_unused=self.hps.state_only,
+            allow_unused=False,
         )
         # Return the gradient penalties
         grads_norm_s = list(grads)[0].norm(2, dim=-1)
+        grads_norm_a = list(grads)[1].norm(2, dim=-1)
         grad_pen_s = (grads_norm_s - self.hps.ptso_grad_pen_targ_s).pow(2).mean()
-        logger.info(f"grad pen s: {grad_pen_s}")
-        if self.hps.state_only:
-            return grad_pen_s, None
-        else:
-            grads_norm_a = list(grads)[1].norm(2, dim=-1)
-            grad_pen_a = (grads_norm_a - self.hps.ptso_grad_pen_targ_a).pow(2).mean()
-            logger.info(f"grad pen a: {grad_pen_a}")
-            return grad_pen_s, grad_pen_a
+        grad_pen_a = (grads_norm_a - self.hps.ptso_grad_pen_targ_a).pow(2).mean()
+        return grad_pen_s, grad_pen_a, grads_norm_s, grads_norm_a
 
     def update_target_net(self):
         """Update the target networks"""

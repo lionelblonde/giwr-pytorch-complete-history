@@ -71,7 +71,7 @@ use_expert_demos: false
 sub_rate: 20
 
 state_dependent_std: true
-warm_start: 2000
+warm_start: 20000
 crit_targ_update_freq: 1
 cql_deterministic_backup: false
 cql_use_adaptive_alpha_ent: true
@@ -96,4 +96,9 @@ ptso_q_min_scale: 1.
 ptso_q_max_scale: 0.
 ptso_use_behav_ac_in_phi: true
 ptso_use_rnd_monitoring: false
-ptso_use_unexpected_uncertainty: true
+ptso_use_unexpected_uncertainty: false
+ptso_use_or_monitor_grad_pen: false
+ptso_grad_pen_scale_s: 0.
+ptso_grad_pen_scale_a: 0.
+ptso_grad_pen_targ_s: 0.
+ptso_grad_pen_targ_a: 0.

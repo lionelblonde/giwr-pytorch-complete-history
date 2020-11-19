@@ -368,6 +368,9 @@ def learn(args,
                         d['q_stats_min'].append(metrics['q_min'])
                         d['q_stats_max'].append(metrics['q_max'])
                         if args.algo.split('_')[0] == 'ptso':
+                            if agent.hps.ptso_use_or_monitor_grad_pen:
+                                d['phi_gradnorm_s'].append(metrics['phi_gradnorm_s'])
+                                d['phi_gradnorm_a'].append(metrics['phi_gradnorm_a'])
                             d['u_stats_mean'].append(metrics['u_mean'])
                             d['u_stats_std'].append(metrics['u_std'])
                             d['u_stats_min'].append(metrics['u_min'])
@@ -424,6 +427,9 @@ def learn(args,
                 logger.record_tabular('q_stats_min', np.mean(d['q_stats_min']))
                 logger.record_tabular('q_stats_max', np.mean(d['q_stats_max']))
                 if args.algo.split('_')[0] == 'ptso':
+                    if agent.hps.ptso_use_or_monitor_grad_pen:
+                        logger.record_tabular('phi_gradnorm_s', np.mean(d['phi_gradnorm_s']))
+                        logger.record_tabular('phi_gradnorm_a', np.mean(d['phi_gradnorm_a']))
                     logger.record_tabular('u_stats_mean', np.mean(d['u_stats_mean']))
                     logger.record_tabular('u_stats_std', np.mean(d['u_stats_std']))
                     logger.record_tabular('u_stats_min', np.mean(d['u_stats_min']))
@@ -482,6 +488,10 @@ def learn(args,
                                'v_q_uniform': np.mean(d['v_q_uniform']),
                                'u_pred_uniform': np.mean(d['u_pred_uniform'])},
                               step=step)
+                    if agent.hps.ptso_use_or_monitor_grad_pen:
+                        wandb.log({'phi_gradnorm_s': np.mean(d['phi_gradnorm_s']),
+                                   'phi_gradnorm_a': np.mean(d['phi_gradnorm_a'])},
+                                  step=step)
                     if agent.hps.ptso_use_rnd_monitoring:
                         wandb.log({'rnd_score': np.mean(d['rnd_score'])},
                                   step=step)

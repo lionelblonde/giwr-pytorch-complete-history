@@ -141,5 +141,10 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'ptso_use_behav_ac_in_phi', default=False)
     boolean_flag(parser, 'ptso_use_rnd_monitoring', default=False)
     boolean_flag(parser, 'ptso_use_unexpected_uncertainty', default=True)
+    boolean_flag(parser, 'ptso_use_or_monitor_grad_pen', default=False)
+    parser.add_argument('--ptso_grad_pen_scale_s', type=float, default=0.)
+    parser.add_argument('--ptso_grad_pen_scale_a', type=float, default=0.)
+    parser.add_argument('--ptso_grad_pen_targ_s', type=float, default=0.)
+    parser.add_argument('--ptso_grad_pen_targ_a', type=float, default=0.)
 
     return parser
