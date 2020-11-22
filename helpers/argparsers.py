@@ -33,6 +33,7 @@ def argparser(description="Offline RL Experiment"):
     # Model
     parser.add_argument('--perception_stack', type=str, default=None)
     boolean_flag(parser, 'layer_norm', default=False)
+    boolean_flag(parser, 'gauss_mixture', default=False)
 
     # Optimization
     parser.add_argument('--actor_lr', type=float, default=1e-4)
@@ -146,5 +147,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--ptso_grad_pen_scale_a', type=float, default=0.)
     parser.add_argument('--ptso_grad_pen_targ_s', type=float, default=0.)
     parser.add_argument('--ptso_grad_pen_targ_a', type=float, default=0.)
+
+    parser.add_argument('--base_pi_loss', type=str, default=None)
 
     return parser

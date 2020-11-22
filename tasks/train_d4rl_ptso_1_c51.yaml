@@ -25,7 +25,7 @@ gauss_mixture: true
 
 # Optimization
 actor_lr: 1.0e-4
-critic_lr: 3.0e-4
+critic_lr: 1.0e-4
 lr_schedule: 'constant'
 clip_norm: 0.
 wd_scale: 0.
@@ -44,7 +44,7 @@ ret_norm: false
 popart: false
 
 # TD3
-clipped_double: true
+clipped_double: false
 ensemble_q_lambda: 1.
 targ_actor_smoothing: false
 td3_std: 0.2
@@ -59,9 +59,9 @@ ranked: false
 unreal: false
 
 # Distributional RL
-use_c51: false
+use_c51: true
 use_qr: false
-c51_num_atoms: 151
+c51_num_atoms: 51
 c51_vmin: -150.
 c51_vmax: 150.
 num_tau: 200

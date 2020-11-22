@@ -10,14 +10,19 @@ from torch import autograd
 from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
+from helpers.math_util import huber_quant_reg_loss
 from helpers.math_util import LRScheduler
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import perception_stack_parser, TanhGaussActor, Critic
+from agents.nets import perception_stack_parser, TanhGaussActor, MixtureTanhGaussActor, Critic
 from agents.rnd import RandomNetworkDistillation
 
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
-TEMPERATURE = 1.0
+CQL_TEMP = 1.0
+EPS_CE = 1e-6
+U_ESTIM_SAMPLES = 10
+CRR_TEMP = 1.0
+ADV_ESTIM_SAMPLES = 4
 
 
 class PTSOAgent(object):
@@ -39,11 +44,36 @@ class PTSOAgent(object):
         assert self.hps.rollout_len <= self.hps.batch_size
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
-        assert not self.hps.use_c51 and not self.hps.use_qr
 
         # Define action clipping range
         self.max_ac = max(np.abs(np.amax(self.ac_space.high.astype('float32'))),
                           np.abs(np.amin(self.ac_space.low.astype('float32'))))
+
+        # Define critic to use
+        assert sum([self.hps.use_c51, self.hps.use_qr]) <= 1
+        if self.hps.use_c51:
+            assert not self.hps.clipped_double
+            c51_supp_range = (self.hps.c51_vmin,
+                              self.hps.c51_vmax,
+                              self.hps.c51_num_atoms)
+            self.c51_supp = torch.linspace(*c51_supp_range).to(self.device)
+            self.c51_delta = ((self.hps.c51_vmax - self.hps.c51_vmin) /
+                              (self.hps.c51_num_atoms - 1))
+            c51_offset_range = (0,
+                                (self.hps.batch_size - 1) * self.hps.c51_num_atoms,
+                                self.hps.batch_size)
+            c51_offset = torch.linspace(*c51_offset_range).to(self.device)
+            self.c51_offset = c51_offset.long().unsqueeze(1).expand(self.hps.batch_size,
+                                                                    self.hps.c51_num_atoms)
+        elif self.hps.use_qr:
+            assert not self.hps.clipped_double
+            qr_cum_density = np.array([((2 * i) + 1) / (2.0 * self.hps.num_tau)
+                                       for i in range(self.hps.num_tau)])
+            qr_cum_density = torch.Tensor(qr_cum_density).to(self.device)
+            self.qr_cum_density = qr_cum_density.view(1, 1, -1, 1).expand(self.hps.batch_size,
+                                                                          self.hps.num_tau,
+                                                                          self.hps.num_tau,
+                                                                          -1).to(self.device)
 
         # Parse the noise types
         self.param_noise, self.ac_noise = None, None  # keep this, needed in orchestrator
@@ -55,16 +85,20 @@ class PTSOAgent(object):
             self.rms_obs = None
 
         assert self.hps.ret_norm or not self.hps.popart
+        assert not (self.hps.use_c51 and self.hps.ret_norm)
+        assert not (self.hps.use_qr and self.hps.ret_norm)
         if self.hps.ret_norm:
             # Create return normalizer that maintains running statistics
             self.rms_ret = RunMoms(shape=(1,), use_mpi=False)
 
         # Create online and target nets, and initialize the target nets
         hidden_dims = perception_stack_parser(self.hps.perception_stack)
-        self.actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        Actr = MixtureTanhGaussActor if self.hps.gauss_mixture else TanhGaussActor
+
+        self.actr = Actr(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.main_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
-        self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.main_eval_actr = Actr(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.maxq_eval_actr = Actr(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
 
@@ -124,7 +158,7 @@ class PTSOAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.u_opt = torch.optim.RMSprop(self.crit.u_trainable_params, lr=1e-3)
+        self.u_opt = torch.optim.Adam(self.crit.u_trainable_params, lr=1e-3)
 
         if self.hps.cql_use_adaptive_alpha_ent:  # cql choice: same lr as actor
             self.log_alpha_ent_opt = torch.optim.Adam([self.log_alpha_ent],
@@ -278,7 +312,7 @@ class PTSOAgent(object):
 
     def ac_factory(self, actr, ob, inflate):
         _ob = ob.unsqueeze(1).repeat(1, inflate, 1).view(ob.shape[0] * inflate, ob.shape[1])
-        _ac = actr.sample(_ob, sg=False)
+        _ac = float(self.max_ac) * actr.sample(_ob, sg=False)
         _logp = actr.logp(_ob, _ac)
         return _ac, _logp.view(ob.shape[0], inflate, 1)
 
@@ -287,8 +321,12 @@ class PTSOAgent(object):
         ac_dim = ac.shape[0]
         num_repeat = int(ac_dim / ob_dim)
         _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
-        q_value = crit.QZ(_ob, ac).view(ob.shape[0], num_repeat, 1)
-        return q_value
+        q_value = crit.QZ(_ob, ac)
+        if self.hps.use_c51:
+            q_value = q_value.matmul(self.c51_supp).unsqueeze(-1)
+        elif self.hps.use_qr:
+            q_value = q_value.mean(dim=1, keepdim=True)
+        return q_value.view(ob.shape[0], num_repeat, 1)
 
     def u_factory(self, crit, ob, ac):
         ob_dim = ob.shape[0]
@@ -306,7 +344,12 @@ class PTSOAgent(object):
         _ac_tiled = float(self.max_ac) * actr.sample(_ob_tiled, sg=True)
         _ac_untiled = _ac_tiled.view(ac.shape[0], self.hps.cql_state_inflate, ac.shape[1])
         with torch.no_grad():
-            _q_value = crit.QZ(_ob_tiled, _ac_tiled).mean(dim=1)
+            _q_value = crit.QZ(_ob_tiled, _ac_tiled)
+            if self.hps.use_c51:
+                _q_value = _q_value.matmul(self.c51_supp).unsqueeze(-1)
+            elif self.hps.use_qr:
+                _q_value = _q_value.mean(dim=1, keepdim=True)
+            _q_value = _q_value.mean(dim=1)
             if hasattr(crit, 'u_head'):
                 _u_value = crit.wrap_with_u_head(crit.phi(_ob_tiled, _ac_tiled)).mean(dim=1).clamp(min=1e-6).sqrt()
                 if ucb_or_lcb:
@@ -328,8 +371,12 @@ class PTSOAgent(object):
             #     _optimistic_ac[i, :] = _ac_untiled[i, index[i], :]
             # assert torch.all(torch.eq(_optimistic_ac, optimistic_ac))
 
-        q_value = crit.QZ(ob, optimistic_ac).view(ob.shape[0], 1, 1)
-        return q_value
+        q_value = crit.QZ(ob, optimistic_ac)
+        if self.hps.use_c51:
+            q_value = q_value.matmul(self.c51_supp).unsqueeze(-1)
+        elif self.hps.use_qr:
+            q_value = q_value.mean(dim=1, keepdim=True)
+        return q_value.view(ob.shape[0], 1, 1)
 
     def update_actor_critic(self, batch, update_actor, iters_so_far):
         """Train the actor and critic networks
@@ -360,74 +407,178 @@ class PTSOAgent(object):
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
 
-        # Compute QZ estimate
-        q = self.denorm_rets(self.crit.QZ(state, action))
-        if self.hps.clipped_double:
-            twin_q = self.denorm_rets(self.twin.QZ(state, action))
-
-        # Compute target QZ estimate
         next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
         # Note, here, always stochastic selection of the target action
 
-        q_prime = self.targ_crit.QZ(next_state, next_action)
-        if self.hps.clipped_double:
-            # Define QZ' as the minimum QZ value between TD3's twin QZ's
-            twin_q_prime = self.targ_twin.QZ(next_state, next_action)
-            q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
-                       (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
+        if self.hps.use_c51:
 
-        if not self.hps.cql_deterministic_backup:
-            # Add the causal entropy regularization term
-            next_log_prob = self.actr.logp(next_state, next_action)
-            q_prime -= self.alpha_ent * next_log_prob
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> C51.
 
-        # Assemble the target
-        targ_q = (reward +
-                  (self.hps.gamma ** td_len) * (1. - done) *
-                  self.denorm_rets(q_prime))
-        targ_q = self.norm_rets(targ_q).detach()
+            # Compute QZ estimate
+            z = self.crit.QZ(state, action).unsqueeze(-1)
+            # Compute target QZ estimate
+            z_prime = self.targ_crit.QZ(next_state, next_action).detach()
+            # Project on the c51 support
+            gamma_mask = (self.hps.gamma ** td_len) * (1 - done)
+            p_targ_z = reward + (gamma_mask * self.c51_supp.unsqueeze(0))
+            # Clamp when the projected value goes under the min or over the max
+            p_targ_z = p_targ_z.clamp(self.hps.c51_vmin, self.hps.c51_vmax)
+            # Define the translation (bias) to map the projection to [0, num_atoms - 1]
+            bias = (p_targ_z - self.hps.c51_vmin) / self.c51_delta
+            # How to assign mass at atoms while the values are over the continuous
+            # interval [0, num_atoms - 1]? Calculate the lower and upper atoms.
+            # Note, the integers of the interval coincide exactly with the atoms.
+            # The considered atoms are therefore calculated simply using floor and ceil.
+            l_atom, u_atom = bias.floor().long(), bias.ceil().long()
+            # Deal with the case where bias is an integer (exact atom), bias = l_atom = u_atom,
+            # in which case we offset l by 1 to the left and u by 1 to the right when applicable.
+            l_atom[(u_atom > 0) * (l_atom == u_atom)] -= 1
+            u_atom[(l_atom < (self.hps.c51_num_atoms - 1)) * (l_atom == u_atom)] += 1
+            # Calculate the gaps between the bias and the lower and upper atoms respectively
+            l_gap = bias - l_atom.float()
+            u_gap = u_atom.float() - bias
+            # Create the translated and projected target, with the right size, but zero-filled
+            t_p_targ_z = z_prime.detach().clone().zero_()  # detach just in case
+            t_p_targ_z.view(-1).index_add_(
+                0,
+                (l_atom + self.c51_offset).view(-1),
+                (z_prime * u_gap).view(-1)
+            )
+            t_p_targ_z.view(-1).index_add_(
+                0,
+                (u_atom + self.c51_offset).view(-1),
+                (z_prime * l_gap).view(-1)
+            )
+            # Reshape target to be of shape [batch_size, self.hps.c51_num_atoms, 1]
+            t_p_targ_z = t_p_targ_z.view(-1, self.hps.c51_num_atoms, 1)
 
-        if self.hps.ret_norm:
-            if self.hps.popart:
-                # Apply Pop-Art, https://arxiv.org/pdf/1602.07714.pdf
-                # Save the pre-update running stats
-                old_mean = torch.Tensor(self.rms_ret.mean).to(self.device)
-                old_std = torch.Tensor(self.rms_ret.std).to(self.device)
-                # Update the running stats
-                self.rms_ret.update(targ_q)
-                # Get the post-update running statistics
-                new_mean = torch.Tensor(self.rms_ret.mean).to(self.device)
-                new_std = torch.Tensor(self.rms_ret.std).to(self.device)
-                # Preserve the output from before the change of normalization old->new
-                # for both online and target critic(s)
-                outs = [self.crit.out_params, self.targ_crit.out_params]
-                if self.hps.clipped_double:
-                    outs.extend([self.twin.out_params, self.targ_twin.out_params])
-                for out in outs:
-                    w, b = out
-                    w.data.copy_(w.data * old_std / new_std)
-                    b.data.copy_(((b.data * old_std) + old_mean - new_mean) / new_std)
-            else:
-                # Update the running stats
-                self.rms_ret.update(targ_q)
+            # Critic loss
+            ce_losses = -(t_p_targ_z.detach() * torch.log(z.clamp(EPS_CE, 1. - EPS_CE))).sum(dim=1)
+            # shape is batch_size x 1
 
-        # Critic loss
-        mse_td_errors = F.mse_loss(q, targ_q, reduction='none')
-        if self.hps.clipped_double:
-            twin_mse_td_errors = F.mse_loss(twin_q, targ_q, reduction='none')
+            if self.hps.prioritized_replay:
+                # Update priorities
+                new_priorities = np.abs(ce_losses.detach().cpu().numpy()) + 1e-6
+                self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
+                # Adjust with importance weights
+                ce_losses *= iws
 
-        if self.hps.prioritized_replay:
-            # Adjust with importance weights
-            mse_td_errors *= iws
+            crit_loss = ce_losses.mean()
+
+        elif self.hps.use_qr:
+
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> QR.
+
+            # Compute QZ estimate
+            z = self.crit.QZ(state, action).unsqueeze(-1)
+
+            # Compute target QZ estimate
+            z_prime = self.targ_crit.QZ(next_state, next_action)
+            # Reshape rewards to be of shape [batch_size x num_tau, 1]
+            reward = reward.repeat(self.hps.num_tau, 1)
+            # Reshape product of gamma and mask to be of shape [batch_size x num_tau, 1]
+            gamma_mask = ((self.hps.gamma ** td_len) * (1 - done)).repeat(self.hps.num_tau, 1)
+            z_prime = z_prime.view(-1, 1)
+            targ_z = reward + (gamma_mask * z_prime)
+            # Reshape target to be of shape [batch_size, num_tau, 1]
+            targ_z = targ_z.view(-1, self.hps.num_tau, 1)
+
+            # Critic loss
+            # Compute the TD error loss
+            # Note: online version has shape [batch_size, num_tau, 1],
+            # while the target version has shape [batch_size, num_tau, 1].
+            td_errors = targ_z[:, :, None, :].detach() - z[:, None, :, :]  # broadcasting
+            # The resulting shape is [batch_size, num_tau, num_tau, 1]
+
+            # Assemble the Huber Quantile Regression loss
+            huber_td_errors = huber_quant_reg_loss(td_errors, self.qr_cum_density)
+            # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
+
+            if self.hps.prioritized_replay:
+                # Adjust with importance weights
+                huber_td_errors *= iws
+                # Update priorities
+                new_priorities = np.abs(td_errors.sum(dim=2).mean(dim=1).detach().cpu().numpy())
+                new_priorities += 1e-6
+                self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
+
+            # Sum over current quantile value (tau, N in paper) dimension, and
+            # average over target quantile value (tau prime, N' in paper) dimension.
+            crit_loss = huber_td_errors.sum(dim=2)
+            # Resulting shape is [batch_size, num_tau_prime, 1]
+            crit_loss = crit_loss.mean(dim=1)
+            # Resulting shape is [batch_size, 1]
+            # Average across the minibatch
+            crit_loss = crit_loss.mean()
+
+        else:
+
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA.
+
+            # Compute QZ estimate
+            q = self.denorm_rets(self.crit.QZ(state, action))
             if self.hps.clipped_double:
-                twin_mse_td_errors *= iws
-            # Update priorities
-            new_priorities = np.abs((q - targ_q).detach().cpu().numpy()) + 1e-6
-            self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
+                twin_q = self.denorm_rets(self.twin.QZ(state, action))
 
-        crit_loss = mse_td_errors.mean()
-        if self.hps.clipped_double:
-            twin_loss = twin_mse_td_errors.mean()
+            q_prime = self.targ_crit.QZ(next_state, next_action)
+            if self.hps.clipped_double:
+                # Define QZ' as the minimum QZ value between TD3's twin QZ's
+                twin_q_prime = self.targ_twin.QZ(next_state, next_action)
+                q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
+                           (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
+
+            if not self.hps.cql_deterministic_backup:
+                # Add the causal entropy regularization term
+                next_log_prob = self.actr.logp(next_state, next_action)
+                q_prime -= self.alpha_ent * next_log_prob
+
+            # Assemble the target
+            targ_q = (reward +
+                      (self.hps.gamma ** td_len) * (1. - done) *
+                      self.denorm_rets(q_prime))
+            targ_q = self.norm_rets(targ_q).detach()
+
+            if self.hps.ret_norm:
+                if self.hps.popart:
+                    # Apply Pop-Art, https://arxiv.org/pdf/1602.07714.pdf
+                    # Save the pre-update running stats
+                    old_mean = torch.Tensor(self.rms_ret.mean).to(self.device)
+                    old_std = torch.Tensor(self.rms_ret.std).to(self.device)
+                    # Update the running stats
+                    self.rms_ret.update(targ_q)
+                    # Get the post-update running statistics
+                    new_mean = torch.Tensor(self.rms_ret.mean).to(self.device)
+                    new_std = torch.Tensor(self.rms_ret.std).to(self.device)
+                    # Preserve the output from before the change of normalization old->new
+                    # for both online and target critic(s)
+                    outs = [self.crit.out_params, self.targ_crit.out_params]
+                    if self.hps.clipped_double:
+                        outs.extend([self.twin.out_params, self.targ_twin.out_params])
+                    for out in outs:
+                        w, b = out
+                        w.data.copy_(w.data * old_std / new_std)
+                        b.data.copy_(((b.data * old_std) + old_mean - new_mean) / new_std)
+                else:
+                    # Update the running stats
+                    self.rms_ret.update(targ_q)
+
+            # Critic loss
+            mse_td_errors = F.mse_loss(q, targ_q, reduction='none')
+            if self.hps.clipped_double:
+                twin_mse_td_errors = F.mse_loss(twin_q, targ_q, reduction='none')
+
+            if self.hps.prioritized_replay:
+                # Adjust with importance weights
+                mse_td_errors *= iws
+                if self.hps.clipped_double:
+                    twin_mse_td_errors *= iws
+                # Update priorities
+                new_priorities = np.abs((q - targ_q).detach().cpu().numpy()) + 1e-6
+                self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
+
+            crit_loss = mse_td_errors.mean()
+            if self.hps.clipped_double:
+                twin_loss = twin_mse_td_errors.mean()
 
         if self.hps.cql_use_min_q_loss:
             # Add CQL contribution (rest is pretty much exactly SAC)
@@ -523,14 +674,21 @@ class PTSOAgent(object):
         if self.hps.cql_use_min_q_loss:
             # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
             # will be the first to be shrinked)
-            min_crit_loss += (torch.logsumexp(cql_cat_q / TEMPERATURE, dim=1).mean() *
-                              self.hps.cql_min_q_weight * TEMPERATURE)
+            min_crit_loss += (torch.logsumexp(cql_cat_q / CQL_TEMP, dim=1).mean() *
+                              self.hps.cql_min_q_weight * CQL_TEMP)
             if self.hps.clipped_double:
-                min_twin_loss += (torch.logsumexp(cql_cat_twin_q / TEMPERATURE, dim=1).mean() *
-                                  self.hps.cql_min_q_weight * TEMPERATURE)
+                min_twin_loss += (torch.logsumexp(cql_cat_twin_q / CQL_TEMP, dim=1).mean() *
+                                  self.hps.cql_min_q_weight * CQL_TEMP)
 
         if self.hps.cql_use_max_q_loss:
             # Piece #2: maximize the Q-function on points in the offline dataset
+
+            # When using distributional critics, define q from z
+            if self.hps.use_c51:
+                q = z.squeeze(-1).matmul(self.c51_supp).unsqueeze(-1)
+            elif self.hps.use_qr:
+                q = z.squeeze(-1).mean(dim=1, keepdim=True)
+
             min_crit_loss -= (q.mean() * self.hps.cql_min_q_weight)
             if self.hps.ptso_q_max_scale > 0:
                 min_crit_loss -= (ptso_q_max.mean() * self.hps.ptso_q_max_scale)
@@ -649,7 +807,7 @@ class PTSOAgent(object):
             u_prime = crit_in_ube_targ.wrap_with_u_head(crit_in_ube_targ.phi(next_state, next_action))
             targ_u = (v_q + ((self.hps.gamma ** 2) * (1. - done) * u_prime)).clamp(min=0.)
             # Note, we clamp for the target to be non-negative, to urge the prediction to always be non-negative
-        u_pred = self.crit.wrap_with_u_head(self.crit.phi(state, action).detach())  # can onlu update the outpur head
+        u_pred = self.crit.wrap_with_u_head(self.crit.phi(state, action).detach())  # can only update the output head
         u_loss = F.mse_loss(u_pred, targ_u.detach())  # detach, just in case
         metrics['v_q'].append(v_q.mean())
         metrics['u_pred'].append(u_pred.mean())
@@ -699,15 +857,22 @@ class PTSOAgent(object):
                 self.precision -= (numer / denom)
 
         if iters_so_far % self.hps.crit_targ_update_freq == 0:
-            self.update_target_net()
+            self.update_target_net(iters_so_far)
 
         # Only update the policy after a certain number of iteration (CQL codebase: 20000)
         # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
 
         # Actor loss
         if iters_so_far >= self.hps.warm_start:
-            # Use full-blown loss
+            # Use offline RL loss
+
+            # For monitoring purposes, evaluate Q at the agent's action
+            # Even if unused by the selected loss thereafter, it is worth the evaluation cost
             q_from_actr = self.crit.QZ(state, action_from_actr)
+            if self.hps.use_c51:
+                q_from_actr = q_from_actr.matmul(self.c51_supp).unsqueeze(-1)
+            elif self.hps.use_qr:
+                q_from_actr = q_from_actr.mean(dim=1, keepdim=True)
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
                 q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
@@ -715,26 +880,50 @@ class PTSOAgent(object):
             metrics['q_std'].append(q_from_actr.std())
             metrics['q_min'].append(q_from_actr.min())
             metrics['q_max'].append(q_from_actr.max())
-            actr_loss = (self.alpha_ent * log_prob) - q_from_actr
-
+            # Same goes for the uncertainty
             phi_from_actr = self.crit.phi(state, action_from_actr)
-            u_from_actr = self.crit.wrap_with_u_head(phi_from_actr).clamp(min=1e-6).sqrt()
+            u_from_actr = self.crit.wrap_with_u_head(phi_from_actr).clamp(min=1e-8).sqrt()
             # Note, we clamp for the value to be non-negative, for the square-root to always be defined
             # We clip with an epsilon strictly greater than zero because of sqrt's derivative at zero
             metrics['u_mean'].append(u_from_actr.mean())
             metrics['u_std'].append(u_from_actr.std())
             metrics['u_min'].append(u_from_actr.min())
             metrics['u_max'].append(u_from_actr.max())
-
             # # Sanity-check
             # assert not u_from_actr.isnan().any()
 
-            if self.hps.ptso_use_unexpected_uncertainty:
-                # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
-                expected_u_from_actr = self.u_factory(self.crit, state, cql_ac).mean(dim=1).detach()
-                u_from_actr -= expected_u_from_actr
+            # Assemble base loss
+            if self.hps.base_pi_loss in ['sac', 'cql']:
+                actr_loss = (self.alpha_ent * log_prob) - q_from_actr
+            elif self.hps.base_pi_loss in ['crr_exp', 'crr_binary', 'crr_binary_max']:
+                crr_q = self.crit.QZ(state, action)
+                if self.hps.use_c51:
+                    crr_q = crr_q.matmul(self.c51_supp).unsqueeze(-1)
+                elif self.hps.use_qr:
+                    crr_q = crr_q.mean(dim=1, keepdim=True)
+                emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                if 'max' in self.hps.base_pi_loss:
+                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).max(dim=1).values.detach()
+                else:
+                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1).detach()
+                crr_adv = crr_q - emp_adv_from_actr
+                if 'binary' in self.hps.base_pi_loss:
+                    crr_adv = 1. * crr_adv.gt(0.)
+                else:  # only other case: exp
+                    crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
+                actr_loss = -self.actr.logp(state, action) * crr_adv
+            else:
+                raise NotImplementedError("invalid base loss for policy improvement.")
 
+            # If opted in, add the uncertainty contribution in the policy improvement loss
             if self.hps.ptso_u_scale_p_i > 0:
+
+                if self.hps.ptso_use_unexpected_uncertainty:
+                    # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
+                    u_u_ac, _ = self.ac_factory(self.actr, state, U_ESTIM_SAMPLES)
+                    expected_u_from_actr = self.u_factory(self.crit, state, u_u_ac).mean(dim=1).detach()
+                    u_from_actr -= expected_u_from_actr
+
                 if self.hps.ptso_use_v_and_u:
                     _new_phi = phi_from_actr.unsqueeze(-1)
                     _new_phi_t = torch.transpose(_new_phi, -1, -2)
@@ -749,8 +938,7 @@ class PTSOAgent(object):
             actr_loss = actr_loss.mean()
         else:
             # Use behavioral cloning losses
-            actr_loss = (F.mse_loss(self.actr.logp(state, action).detach(), log_prob) +
-                         F.mse_loss(action, action_from_actr))
+            actr_loss = F.mse_loss(action, action_from_actr)
         metrics['actr_loss'].append(actr_loss)
 
         self.actr_opt.zero_grad()
@@ -809,15 +997,21 @@ class PTSOAgent(object):
         grad_pen_a = (grads_norm_a - self.hps.ptso_grad_pen_targ_a).pow(2).mean()
         return grad_pen_s, grad_pen_a, grads_norm_s, grads_norm_a
 
-    def update_target_net(self):
+    def update_target_net(self, iters_so_far):
         """Update the target networks"""
-        for param, targ_param in zip(self.crit.parameters(), self.targ_crit.parameters()):
-            targ_param.data.copy_(self.hps.polyak * param.data +
-                                  (1. - self.hps.polyak) * targ_param.data)
-        if self.hps.clipped_double:
-            for param, targ_param in zip(self.twin.parameters(), self.targ_twin.parameters()):
+        if sum([self.hps.use_c51, self.hps.use_qr]) == 0:
+            # If non-distributional, targets slowly track their non-target counterparts
+            for param, targ_param in zip(self.crit.parameters(), self.targ_crit.parameters()):
                 targ_param.data.copy_(self.hps.polyak * param.data +
                                       (1. - self.hps.polyak) * targ_param.data)
+            if self.hps.clipped_double:
+                for param, targ_param in zip(self.twin.parameters(), self.targ_twin.parameters()):
+                    targ_param.data.copy_(self.hps.polyak * param.data +
+                                          (1. - self.hps.polyak) * targ_param.data)
+        else:
+            # If distributional, periodically set target weights with online's
+            if iters_so_far % self.hps.targ_up_freq == 0:
+                self.targ_crit.load_state_dict(self.crit.state_dict())
 
     def update_eval_nets(self):
         for param, eval_param in zip(self.actr.parameters(), self.main_eval_actr.parameters()):

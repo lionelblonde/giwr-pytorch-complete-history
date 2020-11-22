@@ -15,12 +15,13 @@ logging:
 save_frequency: 1e5
 num_steps: 5e5
 training_steps_per_iter: 1
-eval_steps_per_iter: 10
+eval_steps_per_iter: 50
 eval_frequency: 5e3
 
 # Model
 perception_stack: '"256 256, 256 256"'
 layer_norm: true
+gauss_mixture: true
 
 # Optimization
 actor_lr: 1.0e-4
@@ -71,9 +72,9 @@ use_expert_demos: false
 sub_rate: 20
 
 state_dependent_std: true
-warm_start: 20000
+warm_start: 2000
 crit_targ_update_freq: 1
-cql_deterministic_backup: false
+cql_deterministic_backup: true
 cql_use_adaptive_alpha_ent: true
 cql_use_adaptive_alpha_pri: true
 cql_init_temp_log_alpha_ent: 0.
@@ -82,23 +83,25 @@ cql_targ_lower_bound: 5.
 cql_min_q_weight: 5.
 cql_state_inflate: 10
 cql_use_version_3: true
-cql_use_min_q_loss: true
-cql_use_max_q_loss: true
+cql_use_min_q_loss: false
+cql_use_max_q_loss: false
 
 ptso_use_targ_for_u: true
 ptso_num_mat_updates_per_iter: 50
 ptso_u_scale_p_i: 0.
-ptso_u_scale_q_min: 1.
+ptso_u_scale_q_min: 0.
 ptso_u_scale_q_max: 0.
 ptso_use_v_and_u: false
 ptso_use_u_inference_time: false
-ptso_q_min_scale: 1.
+ptso_q_min_scale: 0.
 ptso_q_max_scale: 0.
 ptso_use_behav_ac_in_phi: true
 ptso_use_rnd_monitoring: false
 ptso_use_unexpected_uncertainty: false
-ptso_use_or_monitor_grad_pen: false
+ptso_use_or_monitor_grad_pen: true
 ptso_grad_pen_scale_s: 0.
 ptso_grad_pen_scale_a: 0.
 ptso_grad_pen_targ_s: 0.
 ptso_grad_pen_targ_a: 0.
+
+base_pi_loss: 'cql'

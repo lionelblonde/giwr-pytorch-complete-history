@@ -30,6 +30,8 @@ ENV_BUNDLES = {
     },
     'd4rl': {
         'debug': ['hopper-expert-v0'],
+        'debug2': ['hopper-expert-v0',
+                   'walker2d-expert-v0'],
         'debug_antmaze': ['antmaze-medium-play-v0'],
         'debug_adroit': ['pen-human-v0'],
         'debug_kitchen': ['kitchen-partial-v0'],
@@ -172,7 +174,7 @@ class Spawner(object):
         self.memory = MEMORY
 
         # Write out the boolean arguments (using the 'boolean_flag' function)
-        self.bool_args = ['cuda', 'render', 'record', 'layer_norm',
+        self.bool_args = ['cuda', 'render', 'record', 'layer_norm', 'gauss_mixture',
                           'prioritized_replay', 'ranked', 'unreal', 'n_step_returns', 'obs_norm', 'ret_norm', 'popart',
                           'clipped_double', 'targ_actor_smoothing', 'use_c51', 'use_qr',
                           'offline', 'use_expert_demos', 'state_dependent_std', 'use_adaptive_alpha',
@@ -282,6 +284,7 @@ class Spawner(object):
                 # Model
                 'perception_stack': self.config['perception_stack'],
                 'layer_norm': self.config['layer_norm'],
+                'gauss_mixture': self.config.get('gauss_mixture', False),
 
                 # Optimization
                 'actor_lr': float(np.random.choice([1e-4, 3e-4])),
@@ -381,6 +384,8 @@ class Spawner(object):
                 'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),
                 'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
                 'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
+
+                'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
             }
         else:
             # No search, fixed hyper-parameters
@@ -404,6 +409,7 @@ class Spawner(object):
                 # Model
                 'perception_stack': self.config['perception_stack'],
                 'layer_norm': self.config['layer_norm'],
+                'gauss_mixture': self.config.get('gauss_mixture', False),
 
                 # Optimization
                 'actor_lr': float(self.config.get('actor_lr', 1e-4)),
@@ -500,6 +506,8 @@ class Spawner(object):
                 'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),
                 'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
                 'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
+
+                'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
             }
 
         # Duplicate for each environment

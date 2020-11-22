@@ -12,6 +12,7 @@ BCQ_Z_CLAMPS = [-0.5, 0.5]
 BCQ_LOG_STD_CLAMPS = [-4., 15.]
 SAC_MEAN_CLAMPS = [-9., 9.]
 SAC_LOG_STD_CLAMPS = [-5., 2.]
+GAUSS_MIXTURE_COMPS = 5  # like in ERR
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
@@ -279,7 +280,8 @@ class ActorVAE(nn.Module):
 
         # Create generator object which manages the random state of the actor
         # All the sampling is done by giving the generator as input
-        self.gen = torch.Generator().manual_seed(self.hps.seed)
+        self.gen = torch.Generator(device=hps.device).manual_seed(self.hps.seed)
+        # Note, the device needs to be specified here, not carried over by the model
 
     def decode(self, ob, z=None):
         """Used in BCQ"""
@@ -329,7 +331,7 @@ class ActorVAE(nn.Module):
         return ac, mean, std
 
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> SAC/BEAR-specific models.
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Tanh-wrapped models.
 
 def arctanh(x):
     """Implementation of the arctanh function.
@@ -342,6 +344,7 @@ def arctanh(x):
 
 
 class NormalToolkit(object):
+    """Technically, multivariate normal with diagonal covariance"""
 
     @staticmethod
     def logp(x, mean, std):
@@ -353,7 +356,7 @@ class NormalToolkit(object):
     @staticmethod
     def sample(mean, std, generator):
         # Re-parametrization trick
-        eps = torch.empty(mean.size()).normal_(generator=generator).to(mean.device)
+        eps = torch.empty(mean.size()).to(mean.device).normal_(generator=generator)
         eps.requires_grad = False
         return mean + std * eps
 
@@ -363,6 +366,7 @@ class NormalToolkit(object):
 
 
 class TanhNormalToolkit(object):
+    """Technically, multivariate normal with diagonal covariance"""
 
     @staticmethod
     def logp(x, mean, std):
@@ -374,6 +378,7 @@ class TanhNormalToolkit(object):
 
     @staticmethod
     def nonsquashed_sample(mean, std, generator):
+        # Special for BEAR
         sample = NormalToolkit.sample(mean, std, generator)
         return sample
 
@@ -385,6 +390,39 @@ class TanhNormalToolkit(object):
     @staticmethod
     def mode(mean):
         return torch.tanh(mean)
+
+
+class MixtureTanhNormalToolkit(object):
+    """Technically, mixture of multivariate normal with diagonal covariances"""
+
+    @staticmethod
+    def logp(x, log_mixture, mean, std):
+        # `x` has shape[batch_size, ac_dim], while mean and std have shape [batch_size, K, ac_dim]
+        logp_per_comp = TanhNormalToolkit.logp(x.unsqueeze(1).repeat(1, GAUSS_MIXTURE_COMPS, 1), mean, std)
+        # `logp_per_comp` should have shape [batch_size, K], and now we compute the mixture weighted average
+        logp = (torch.logsumexp(logp_per_comp + log_mixture.unsqueeze(-1), dim=1) -
+                torch.logsumexp(log_mixture.unsqueeze(-1), dim=1))
+        # The resulting logp should have shape [batch_size, 1]
+        return logp
+
+    @staticmethod
+    def sample(log_mixture, mean, std, generator):
+        # `mixture` has shape [batch_size, K]
+        # Sample a component of the mixture, `component` has shape [batch_size, 1]
+        comp_index = torch.multinomial(log_mixture.exp(), num_samples=1, generator=generator)
+        # Note, exopnential is here because PyTorch's `multinomial` only takes positive logits
+        # Create an index vector that indicate which component in the mixture has been selected
+        comp_index = comp_index.unsqueeze(-1).expand(-1, -1, mean.shape[-1])
+        # Gather the mean and std of the components of the mixture corresponding to the indices
+        comp_mean = torch.gather(mean, 1, comp_index).squeeze(dim=1)
+        comp_std = torch.gather(std, 1, comp_index).squeeze(dim=1)
+        sample = TanhNormalToolkit.sample(comp_mean, comp_std, generator)
+        return sample
+
+    @staticmethod
+    def mode(mean):
+        mode = mean.max(dim=1).values
+        return mode
 
 
 class TanhGaussActor(nn.Module):
@@ -420,7 +458,8 @@ class TanhGaussActor(nn.Module):
 
         # Create generator object which manages the random state of the actor
         # All the sampling is done by giving the generator as input
-        self.gen = torch.Generator().manual_seed(self.hps.seed)
+        self.gen = torch.Generator(device=hps.device).manual_seed(self.hps.seed)
+        # Note, the device needs to be specified here, not carried over by the model
 
     def logp(self, ob, ac):
         out = self.forward(ob)
@@ -465,6 +504,7 @@ class TanhGaussActor(nn.Module):
         if self.rms_obs is not None:
             ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(ob)
+        # Note, the following clipping values were taken from the SAC/BEAR codebases
         if self.hps.state_dependent_std:
             ac_mean, ac_log_std = self.head(x).chunk(2, dim=-1)
             ac_mean = ac_mean.clamp(*SAC_MEAN_CLAMPS)
@@ -472,5 +512,93 @@ class TanhGaussActor(nn.Module):
         else:
             ac_mean = self.head(x).clamp(*SAC_MEAN_CLAMPS)
             ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(*SAC_LOG_STD_CLAMPS).exp()
-        # Note, clipping values were taken from the SAC/BEAR codebases
         return ac_mean, ac_std
+
+
+class MixtureTanhGaussActor(nn.Module):
+
+    def __init__(self, env, hps, rms_obs, hidden_dims):
+        super(MixtureTanhGaussActor, self).__init__()
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
+        self.ac_dim = ac_dim  # defined here for convenience later
+        self.hps = hps
+        # Define observation whitening
+        self.rms_obs = rms_obs
+        # Define perception stack
+        self.fc_stack = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim, hidden_dims[0])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
+                ('nl', nn.ReLU()),
+            ]))),
+            ('fc_block_2', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(hidden_dims[0], hidden_dims[1])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        if self.hps.state_dependent_std:
+            self.head = nn.Linear(hidden_dims[1], GAUSS_MIXTURE_COMPS * ((2 * ac_dim) + 1))
+        else:
+            self.head = nn.Linear(hidden_dims[1], GAUSS_MIXTURE_COMPS * (ac_dim + 1))
+            self.ac_logstd_head = nn.Parameter(torch.full((GAUSS_MIXTURE_COMPS, ac_dim,), math.log(0.6)))
+        # Perform initialization
+        self.fc_stack.apply(init(weight_scale=5. / 3.))
+        self.head.apply(init(weight_scale=0.01))
+
+        # Create generator object which manages the random state of the actor
+        # All the sampling is done by giving the generator as input
+        self.gen = torch.Generator(device=hps.device).manual_seed(self.hps.seed)
+        # Note, the device needs to be specified here, not carried over by the model
+
+    def logp(self, ob, ac):
+        out = self.forward(ob)
+        return MixtureTanhNormalToolkit.logp(ac, *out[0:3])  # mixture, mean, std
+
+    def entropy(self, ob):
+        raise NotImplementedError
+
+    def sample(self, ob, sg=True):
+        if sg:
+            with torch.no_grad():
+                out = self.forward(ob)
+                ac = MixtureTanhNormalToolkit.sample(*out[0:3], generator=self.gen)  # mixture, mean, std
+        else:
+            out = self.forward(ob)
+            ac = MixtureTanhNormalToolkit.sample(*out[0:3], generator=self.gen)  # mixture, mean, std
+        return ac
+
+    def mode(self, ob, sg=True):
+        if sg:
+            with torch.no_grad():
+                out = self.forward(ob)
+                ac = MixtureTanhNormalToolkit.mode(out[1])  # mean
+        else:
+            out = self.forward(ob)
+            ac = MixtureTanhNormalToolkit.mode(out[1])  # mean
+        return ac
+
+    def kl(self, ob, other):
+        assert isinstance(other, MixtureTanhGaussActor)
+        raise NotImplementedError
+
+    def forward(self, ob):
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        x = self.fc_stack(ob)
+        # Note, the following clipping values were taken from the SAC/BEAR codebases
+        if self.hps.state_dependent_std:
+            ac_suff_stats_packed = self.head(x).view(-1, GAUSS_MIXTURE_COMPS, (2 * self.ac_dim) + 1)
+            ac_log_mixture_weights = ac_suff_stats_packed[..., 0]
+            ac_mean = ac_suff_stats_packed[..., 1:1 + self.ac_dim]
+            ac_log_std = ac_suff_stats_packed[..., 1 + self.ac_dim:]
+            ac_mean = ac_mean.clamp(*SAC_MEAN_CLAMPS)
+            ac_std = ac_log_std.clamp(*SAC_LOG_STD_CLAMPS).exp()
+        else:
+            ac_suff_stats_packed = self.head(x).view(-1, GAUSS_MIXTURE_COMPS, self.ac_dim + 1)
+            ac_log_mixture_weights = ac_suff_stats_packed[..., 0]
+            ac_mean = ac_suff_stats_packed[..., 1:]
+            ac_mean = ac_mean.clamp(*SAC_MEAN_CLAMPS)
+            ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(*SAC_LOG_STD_CLAMPS).exp()
+        return ac_log_mixture_weights, ac_mean, ac_std

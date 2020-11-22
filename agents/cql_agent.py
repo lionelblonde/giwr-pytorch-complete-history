@@ -262,7 +262,7 @@ class CQLAgent(object):
 
     def ac_factory(self, actr, ob, inflate):
         _ob = ob.unsqueeze(1).repeat(1, inflate, 1).view(ob.shape[0] * inflate, ob.shape[1])
-        _ac = actr.sample(_ob, sg=False)
+        _ac = float(self.max_ac) * actr.sample(_ob, sg=False)
         _logp = actr.logp(_ob, _ac)
         return _ac, _logp.view(ob.shape[0], inflate, 1)
 

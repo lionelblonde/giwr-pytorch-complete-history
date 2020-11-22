@@ -15,7 +15,7 @@ logging:
 save_frequency: 1e5
 num_steps: 5e5
 training_steps_per_iter: 1
-eval_steps_per_iter: 10
+eval_steps_per_iter: 50
 eval_frequency: 5e3
 
 # Model
@@ -71,9 +71,9 @@ use_expert_demos: false
 sub_rate: 20
 
 state_dependent_std: true
-warm_start: 20000
+warm_start: 40000
 crit_targ_update_freq: 1
-cql_deterministic_backup: false
+cql_deterministic_backup: true
 cql_use_adaptive_alpha_ent: true
 cql_use_adaptive_alpha_pri: true
 cql_init_temp_log_alpha_ent: 0.

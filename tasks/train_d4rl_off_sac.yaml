@@ -15,7 +15,7 @@ logging:
 save_frequency: 1e5
 num_steps: 5e5
 training_steps_per_iter: 1
-eval_steps_per_iter: 10
+eval_steps_per_iter: 50
 eval_frequency: 5e3
 
 # Model
