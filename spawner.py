@@ -182,7 +182,7 @@ class Spawner(object):
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u',
                           'cql_use_min_q_loss', 'cql_use_max_q_loss',
-                          'ptso_use_v_and_u', 'ptso_use_u_inference_time', 'ptso_use_behav_ac_in_phi',
+                          'ptso_u_pi_sample_or_logp', 'ptso_use_u_inference_time', 'ptso_use_behav_ac_in_phi',
                           'ptso_use_rnd_monitoring', 'ptso_use_unexpected_uncertainty',
                           'ptso_use_or_monitor_grad_pen']
 
@@ -372,7 +372,7 @@ class Spawner(object):
                 'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
                 'ptso_u_scale_q_min': self.config.get('ptso_u_scale_q_min', 0.),
                 'ptso_u_scale_q_max': self.config.get('ptso_u_scale_q_max', 0.),
-                'ptso_use_v_and_u': self.config.get('ptso_use_v_and_u', False),
+                'ptso_u_pi_sample_or_logp': self.config.get('ptso_u_pi_sample_or_logp', False),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
                 'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),
@@ -494,7 +494,7 @@ class Spawner(object):
                 'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
                 'ptso_u_scale_q_min': self.config.get('ptso_u_scale_q_min', 0.),
                 'ptso_u_scale_q_max': self.config.get('ptso_u_scale_q_max', 0.),
-                'ptso_use_v_and_u': self.config.get('ptso_use_v_and_u', False),
+                'ptso_u_pi_sample_or_logp': self.config.get('ptso_u_pi_sample_or_logp', False),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
                 'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),

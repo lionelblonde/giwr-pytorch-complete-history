@@ -16,8 +16,8 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 ALPHA_DIV_CLAMPS = [0., 500.]
 TARG_DIV = 0.
-
 BC_TRAINING_STEPS_PER_BATCH = 10
+CRR_TEMP = 1.0
 
 
 class BRACAgent(object):
@@ -64,8 +64,10 @@ class BRACAgent(object):
         sync_with_root(self.actr)
         self.main_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.cwpq_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
+        self.cwpq_eval_actr.load_state_dict(self.actr.state_dict())
 
         self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
@@ -242,7 +244,7 @@ class BRACAgent(object):
             )
         return batch
 
-    def predict(self, ob, apply_noise, max_q):
+    def predict(self, ob, apply_noise, which):
         """Predict an action, with or without perturbation,
         and optionaly compute and return the associated QZ value.
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
@@ -253,19 +255,32 @@ class BRACAgent(object):
             ob = torch.Tensor(ob[None]).to(self.device)
             ac = float(self.max_ac) * _actr.sample(ob, sg=True)
         else:
-            if max_q:
-                _actr = self.maxq_eval_actr
+            if which in ['maxq', 'cwpq']:
+
+                if which == 'maxq':
+                    _actr = self.maxq_eval_actr
+                else:  # which == 'cwpq'
+                    _actr = self.cwpq_eval_actr
+
                 ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
                 ac = float(self.max_ac) * _actr.sample(ob, sg=True)
                 # Among the 100 values, take the one with the highest Q value (or Z value)
-                q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
-                index = q_value.argmax(0)
+                q_value = self.crit.QZ(ob, ac).mean(dim=1)
+
+                if which == 'maxq':
+                    index = q_value.argmax(0)
+                else:  # which == 'cwpq'
+                    weight = torch.exp(q_value / CRR_TEMP).clamp(min=0.01, max=1000.)
+                    index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
+
                 ac = ac[index]
-            else:
+
+            else:  # which == 'main'
                 _actr = self.main_eval_actr
                 ob = torch.Tensor(ob[None]).to(self.device)
                 ac = float(self.max_ac) * _actr.mode(ob, sg=True)
                 # Gaussian, so mode == mean, can use either interchangeably
+
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action
@@ -284,8 +299,6 @@ class BRACAgent(object):
         for _ in range(BC_TRAINING_STEPS_PER_BATCH):
             action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
             actr_b_loss = F.mse_loss(action_from_actr_b, action)
-            actr_b_loss += F.mse_loss(self.actr_b.logp(state, action_from_actr_b),
-                                      self.actr_b.logp(state, action))
             bc_loss_deque.append(actr_b_loss.detach().cpu().numpy())
 
             self.actr_b_opt.zero_grad()
@@ -490,6 +503,8 @@ class BRACAgent(object):
         for param, eval_param in zip(self.actr.parameters(), self.main_eval_actr.parameters()):
             eval_param.data.copy_(param.data)
         for param, eval_param in zip(self.actr.parameters(), self.maxq_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.actr.parameters(), self.cwpq_eval_actr.parameters()):
             eval_param.data.copy_(param.data)
 
     def save(self, path, iters_so_far):

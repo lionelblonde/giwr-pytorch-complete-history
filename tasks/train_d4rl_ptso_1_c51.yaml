@@ -21,7 +21,7 @@ eval_frequency: 5e3
 # Model
 perception_stack: '"256 256, 256 256"'
 layer_norm: true
-gauss_mixture: true
+gauss_mixture: false
 
 # Optimization
 actor_lr: 1.0e-4
@@ -91,13 +91,13 @@ ptso_num_mat_updates_per_iter: 50
 ptso_u_scale_p_i: 0.
 ptso_u_scale_q_min: 0.
 ptso_u_scale_q_max: 0.
-ptso_use_v_and_u: false
+ptso_u_pi_sample_or_logp: false
 ptso_use_u_inference_time: false
 ptso_q_min_scale: 0.
 ptso_q_max_scale: 0.
 ptso_use_behav_ac_in_phi: true
 ptso_use_rnd_monitoring: false
-ptso_use_unexpected_uncertainty: false
+ptso_use_unexpected_uncertainty: true
 ptso_use_or_monitor_grad_pen: true
 ptso_grad_pen_scale_s: 0.
 ptso_grad_pen_scale_a: 0.

@@ -291,7 +291,7 @@ class ActorVAE(nn.Module):
             # When z is not provided as input (or is literally None), sample it (and clip it)
             # z effectively sampled from a truncated (0, 1) isotropic normal distribution
             size = (ob.size(0), self.latent_dim)
-            z = torch.randn(*size, generator=self.gen).to(ob).clamp(*BCQ_Z_CLAMPS)
+            z = torch.randn(*size, device=self.hps.device, generator=self.gen).to(ob).clamp(*BCQ_Z_CLAMPS)
         # Pass through the decoder and output head
         x = torch.cat([ob, z], dim=-1)
         x = self.decoder(x)
@@ -307,7 +307,7 @@ class ActorVAE(nn.Module):
             # When z is not provided as input (or is literally None), sample it (and clip it)
             # z effectively sampled from a truncated (0, 1) isotropic normal distribution
             size = (ob.size(0), expansion, self.latent_dim)
-            z = torch.randn(*size, generator=self.gen).to(ob).clamp(*BCQ_Z_CLAMPS)
+            z = torch.randn(*size, device=self.hps.device, generator=self.gen).to(ob).clamp(*BCQ_Z_CLAMPS)
         # Pass through the decoder and output head
         ob = ob.unsqueeze(0).repeat(expansion, 1, 1).permute(1, 0, 2)
         x = torch.cat([ob, z], dim=-1)
@@ -325,7 +325,7 @@ class ActorVAE(nn.Module):
         mean = self.mean_head(x)
         log_std = self.log_std_head(x).clamp(*BCQ_LOG_STD_CLAMPS)  # clipped for numerical stability (BCQ)
         std = log_std.exp()
-        z = mean + (std * torch.randn(*std.shape, generator=self.gen))
+        z = mean + (std * torch.randn(*std.shape, device=self.hps.device, generator=self.gen))
         # Decode
         ac = self.decode(unnormalized_ob, z)  # the ob will be normalized in `decode`
         return ac, mean, std

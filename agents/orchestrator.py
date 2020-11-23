@@ -66,7 +66,7 @@ def rollout_generator(env, agent, rollout_len, use_noise_process):
         t += 1
 
 
-def ep_generator(env, agent, render, record, max_q):
+def ep_generator(env, agent, render, record, which):
     """Generator that spits out a trajectory collected during a single episode
     `append` operation is also significantly faster on lists than numpy arrays,
     they will be converted to numpy arrays once complete and ready to be yielded.
@@ -93,7 +93,7 @@ def ep_generator(env, agent, render, record, max_q):
     while True:
 
         # Predict action
-        ac = agent.predict(ob, apply_noise=False, max_q=max_q)
+        ac = agent.predict(ob, apply_noise=False, which=which)
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
@@ -224,6 +224,7 @@ def learn(args,
           env,
           main_eval_env,
           maxq_eval_env,
+          cwpq_eval_env,
           agent_wrapper,
           experiment_name,
           use_noise_process=None):
@@ -245,6 +246,7 @@ def learn(args,
         d = defaultdict(list)
         main_eval_deque = deque(maxlen=MAXLEN)
         maxq_eval_deque = deque(maxlen=MAXLEN)
+        cwpq_eval_deque = deque(maxlen=MAXLEN)
 
         # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
@@ -298,8 +300,9 @@ def learn(args,
         roll_gen = rollout_generator(env, agent, args.rollout_len, use_noise_process)
     if rank == 0:
         # Create episode generator for evaluating the agent
-        main_eval_ep_gen = ep_generator(main_eval_env, agent, args.render, args.record, max_q=False)
-        maxq_eval_ep_gen = ep_generator(maxq_eval_env, agent, args.render, args.record, max_q=True)
+        main_eval_ep_gen = ep_generator(main_eval_env, agent, args.render, args.record, which='main')
+        maxq_eval_ep_gen = ep_generator(maxq_eval_env, agent, args.render, args.record, which='maxq')
+        cwpq_eval_ep_gen = ep_generator(cwpq_eval_env, agent, args.render, args.record, which='cwpq')
 
     while iters_so_far <= num_iters:
 
@@ -398,13 +401,17 @@ def learn(args,
                     # Sample an episode
                     main_eval_ep = main_eval_ep_gen.__next__()
                     maxq_eval_ep = maxq_eval_ep_gen.__next__()
+                    cwpq_eval_ep = cwpq_eval_ep_gen.__next__()
                     # Aggregate data collected during the evaluation to the buffers
                     d['main_eval_len'].append(main_eval_ep['ep_len'])
                     d['maxq_eval_len'].append(maxq_eval_ep['ep_len'])
+                    d['cwpq_eval_len'].append(cwpq_eval_ep['ep_len'])
                     d['main_eval_env_ret'].append(main_eval_ep['ep_env_ret'])
                     d['maxq_eval_env_ret'].append(maxq_eval_ep['ep_env_ret'])
+                    d['cwpq_eval_env_ret'].append(cwpq_eval_ep['ep_env_ret'])
                 main_eval_deque.append(np.mean(d['main_eval_env_ret']))
                 maxq_eval_deque.append(np.mean(d['maxq_eval_env_ret']))
+                cwpq_eval_deque.append(np.mean(d['cwpq_eval_env_ret']))
 
         # Increment counters
         iters_so_far += 1
@@ -442,10 +449,13 @@ def learn(args,
                     logger.record_tabular('u_pred_uniform', np.mean(d['u_pred_uniform']))
             logger.record_tabular('main_eval_len', np.mean(d['main_eval_len']))
             logger.record_tabular('maxq_eval_len', np.mean(d['maxq_eval_len']))
+            logger.record_tabular('cwpq_eval_len', np.mean(d['cwpq_eval_len']))
             logger.record_tabular('main_eval_env_ret', np.mean(d['main_eval_env_ret']))
             logger.record_tabular('maxq_eval_env_ret', np.mean(d['maxq_eval_env_ret']))
+            logger.record_tabular('cwpq_eval_env_ret', np.mean(d['cwpq_eval_env_ret']))
             logger.record_tabular('avg_main_eval_env_ret', np.mean(main_eval_deque))
             logger.record_tabular('avg_maxq_eval_env_ret', np.mean(maxq_eval_deque))
+            logger.record_tabular('avg_cwpq_eval_env_ret', np.mean(cwpq_eval_deque))
             logger.info("dumping stats in .csv file")
             logger.dump_tabular()
 
@@ -497,10 +507,13 @@ def learn(args,
                                   step=step)
             wandb.log({'main_eval_len': np.mean(d['main_eval_len']),
                        'maxq_eval_len': np.mean(d['maxq_eval_len']),
+                       'cwpq_eval_len': np.mean(d['cwpq_eval_len']),
                        'main_eval_env_ret': np.mean(d['main_eval_env_ret']),
                        'maxq_eval_env_ret': np.mean(d['maxq_eval_env_ret']),
+                       'cwpq_eval_env_ret': np.mean(d['cwpq_eval_env_ret']),
                        'avg_main_eval_env_ret': np.mean(main_eval_deque),
-                       'avg_maxq_eval_env_ret': np.mean(maxq_eval_deque)},
+                       'avg_maxq_eval_env_ret': np.mean(maxq_eval_deque),
+                       'avg_cwpq_eval_env_ret': np.mean(cwpq_eval_deque)},
                       step=step)
 
             # Clear the iteration's running stats

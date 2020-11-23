@@ -14,6 +14,9 @@ from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuf
 from agents.nets import perception_stack_parser, ActorPhi, ActorVAE, Critic
 
 
+CRR_TEMP = 1.0
+
+
 class BCQAgent(object):
 
     def __init__(self, env, device, hps, to_load_in_memory):
@@ -74,8 +77,10 @@ class BCQAgent(object):
         sync_with_root(self.vae)
         self.main_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
         self.maxq_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        self.cwpq_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
         self.main_eval_vae.load_state_dict(self.vae.state_dict())
         self.maxq_eval_vae.load_state_dict(self.vae.state_dict())
+        self.cwpq_eval_vae.load_state_dict(self.vae.state_dict())
         # Note: why do we create another VAE model for evaluation?
         # because in the official implementation, BCQ uses the trained VAE to decode the state:
         # https://github.com/sfujim/BCQ/blob/cc139e296ce117f9c8e2bfccf7e568a14baf8892/continuous_BCQ/BCQ.py#L127
@@ -200,7 +205,7 @@ class BCQAgent(object):
             )
         return batch
 
-    def predict(self, ob, apply_noise, max_q):
+    def predict(self, ob, apply_noise, which):
         """Predict an action, with or without perturbation,
         and optionaly compute and return the associated QZ value.
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
@@ -208,9 +213,11 @@ class BCQAgent(object):
         if apply_noise:
             _vae = self.vae
         else:
-            if max_q:
+            if which == 'maxq':
                 _vae = self.maxq_eval_vae
-            else:
+            if which == 'cwpq':
+                _vae = self.cwpq_eval_vae
+            else:  # which == 'main'
                 _vae = self.main_eval_vae
 
         ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
@@ -382,6 +389,8 @@ class BCQAgent(object):
         for param, eval_param in zip(self.vae.parameters(), self.main_eval_vae.parameters()):
             eval_param.data.copy_(param.data)
         for param, eval_param in zip(self.vae.parameters(), self.maxq_eval_vae.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.vae.parameters(), self.cwpq_eval_vae.parameters()):
             eval_param.data.copy_(param.data)
 
     def save(self, path, iters_so_far):

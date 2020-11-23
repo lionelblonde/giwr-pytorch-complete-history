@@ -209,9 +209,11 @@ def train(args):
     # Create an evaluation environment not to mess up with training rollouts
     main_eval_env = None
     maxq_eval_env = None
+    cwpq_eval_env = None
     if rank == 0:
         main_eval_env = make_env(args.env_id, eval_seed)
         maxq_eval_env = make_env(args.env_id, eval_seed)
+        cwpq_eval_env = make_env(args.env_id, eval_seed)
 
     # Train
     orchestrator.learn(
@@ -220,6 +222,7 @@ def train(args):
         env=env,
         main_eval_env=main_eval_env,
         maxq_eval_env=maxq_eval_env,
+        cwpq_eval_env=cwpq_eval_env,
         agent_wrapper=agent_wrapper,
         experiment_name=experiment_name,
         use_noise_process=(args.algo == 'ddpg' and not args.offline),

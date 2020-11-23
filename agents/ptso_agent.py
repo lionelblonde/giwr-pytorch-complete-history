@@ -93,14 +93,16 @@ class PTSOAgent(object):
 
         # Create online and target nets, and initialize the target nets
         hidden_dims = perception_stack_parser(self.hps.perception_stack)
-        Actr = MixtureTanhGaussActor if self.hps.gauss_mixture else TanhGaussActor
+        Actr_ = MixtureTanhGaussActor if self.hps.gauss_mixture else TanhGaussActor
 
-        self.actr = Actr(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.actr = Actr_(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.main_eval_actr = Actr(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
-        self.maxq_eval_actr = Actr(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.main_eval_actr = Actr_(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.maxq_eval_actr = Actr_(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.cwpq_eval_actr = Actr_(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
+        self.cwpq_eval_actr.load_state_dict(self.actr.state_dict())
 
         self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
         self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
@@ -275,7 +277,7 @@ class PTSOAgent(object):
             )
         return batch
 
-    def predict(self, ob, apply_noise, max_q):
+    def predict(self, ob, apply_noise, which):
         """Predict an action, with or without perturbation,
         and optionaly compute and return the associated QZ value.
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
@@ -286,8 +288,13 @@ class PTSOAgent(object):
             ob = torch.Tensor(ob[None]).to(self.device)
             ac = float(self.max_ac) * _actr.sample(ob, sg=True)
         else:
-            if max_q:
-                _actr = self.maxq_eval_actr
+            if which in ['maxq', 'cwpq']:
+
+                if which == 'maxq':
+                    _actr = self.maxq_eval_actr
+                else:  # which == 'cwpq'
+                    _actr = self.cwpq_eval_actr
+
                 ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
                 ac = float(self.max_ac) * _actr.sample(ob, sg=True)
                 # Among the 100 values, take the one with the highest Q value (or Z value)
@@ -297,13 +304,20 @@ class PTSOAgent(object):
                     u_value = self.crit.wrap_with_u_head(self.crit.phi(ob, ac)).mean(dim=1).clamp(min=1e-6).sqrt()
                     q_value -= self.hps.ptso_u_scale_p_i * u_value
 
-                index = q_value.argmax(0)
+                if which == 'maxq':
+                    index = q_value.argmax(0)
+                else:  # which == 'cwpq'
+                    weight = torch.exp(q_value / CRR_TEMP).clamp(min=0.01, max=1000.)
+                    index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
+
                 ac = ac[index]
-            else:
+
+            else:  # which == 'main'
                 _actr = self.main_eval_actr
                 ob = torch.Tensor(ob[None]).to(self.device)
                 ac = float(self.max_ac) * _actr.mode(ob, sg=True)
                 # Gaussian, so mode == mean, can use either interchangeably
+
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action
@@ -711,6 +725,8 @@ class PTSOAgent(object):
                 self.log_alpha_pri_opt.step()
                 metrics['alpha_pri_loss'].append(alpha_pri_loss)
 
+        logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
+
         # Piece #3: Add the new losses to the vanilla ones, i.e. the traditional TD errors to minimize
         crit_loss += min_crit_loss
         if self.hps.clipped_double:
@@ -908,7 +924,7 @@ class PTSOAgent(object):
                     emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1).detach()
                 crr_adv = crr_q - emp_adv_from_actr
                 if 'binary' in self.hps.base_pi_loss:
-                    crr_adv = 1. * crr_adv.gt(0.)
+                    crr_adv = 1. * crr_adv.gt(0.)  # trick to easily cast to float
                 else:  # only other case: exp
                     crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
                 actr_loss = -self.actr.logp(state, action) * crr_adv
@@ -922,18 +938,25 @@ class PTSOAgent(object):
                     # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
                     u_u_ac, _ = self.ac_factory(self.actr, state, U_ESTIM_SAMPLES)
                     expected_u_from_actr = self.u_factory(self.crit, state, u_u_ac).mean(dim=1).detach()
-                    u_from_actr -= expected_u_from_actr
 
-                if self.hps.ptso_use_v_and_u:
-                    _new_phi = phi_from_actr.unsqueeze(-1)
-                    _new_phi_t = torch.transpose(_new_phi, -1, -2)
-                    inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
-                    v_q = torch.bmm(torch.bmm(_new_phi_t,
-                                              inflated_precision),
-                                    _new_phi).squeeze(-1)
-                    actr_loss += self.hps.ptso_u_scale_p_i * (v_q + ((self.hps.gamma ** 2) * u_from_actr))
+                if self.hps.ptso_u_pi_sample_or_logp:
+                    if self.hps.ptso_use_unexpected_uncertainty:
+                        actr_loss += (self.hps.ptso_u_scale_p_i *
+                                      (u_from_actr - expected_u_from_actr))
+                    else:
+                        actr_loss += (self.hps.ptso_u_scale_p_i *
+                                      u_from_actr)
                 else:
-                    actr_loss += self.hps.ptso_u_scale_p_i * u_from_actr
+                    phi_from_behav = self.crit.phi(state, action)
+                    u_from_behav = self.crit.wrap_with_u_head(phi_from_behav).clamp(min=1e-8).sqrt()
+                    if self.hps.ptso_use_unexpected_uncertainty:
+                        actr_loss += (self.hps.ptso_u_scale_p_i *
+                                      self.actr.logp(state, action) *
+                                      (u_from_behav - expected_u_from_actr))
+                    else:
+                        actr_loss += (self.hps.ptso_u_scale_p_i *
+                                      self.actr.logp(state, action) *
+                                      u_from_behav)
 
             actr_loss = actr_loss.mean()
         else:
@@ -960,6 +983,8 @@ class PTSOAgent(object):
             alpha_ent_loss.backward()
             self.log_alpha_ent_opt.step()
             metrics['alpha_ent_loss'].append(alpha_ent_loss)
+
+        logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': _lr}
@@ -1017,6 +1042,8 @@ class PTSOAgent(object):
         for param, eval_param in zip(self.actr.parameters(), self.main_eval_actr.parameters()):
             eval_param.data.copy_(param.data)
         for param, eval_param in zip(self.actr.parameters(), self.maxq_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.actr.parameters(), self.cwpq_eval_actr.parameters()):
             eval_param.data.copy_(param.data)
 
     def save(self, path, iters_so_far):

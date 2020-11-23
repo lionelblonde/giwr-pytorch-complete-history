@@ -15,7 +15,8 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
-TEMPERATURE = 1.0
+CQL_TEMP = 1.0
+CRR_TEMP = 1.0
 
 
 class CQLAgent(object):
@@ -63,8 +64,10 @@ class CQLAgent(object):
         sync_with_root(self.actr)
         self.main_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.maxq_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.cwpq_eval_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.main_eval_actr.load_state_dict(self.actr.state_dict())
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
+        self.cwpq_eval_actr.load_state_dict(self.actr.state_dict())
 
         self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
@@ -230,7 +233,7 @@ class CQLAgent(object):
             )
         return batch
 
-    def predict(self, ob, apply_noise, max_q):
+    def predict(self, ob, apply_noise, which):
         """Predict an action, with or without perturbation,
         and optionaly compute and return the associated QZ value.
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
@@ -241,19 +244,32 @@ class CQLAgent(object):
             ob = torch.Tensor(ob[None]).to(self.device)
             ac = float(self.max_ac) * _actr.sample(ob, sg=True)
         else:
-            if max_q:
-                _actr = self.maxq_eval_actr
+            if which in ['maxq', 'cwpq']:
+
+                if which == 'maxq':
+                    _actr = self.maxq_eval_actr
+                else:  # which == 'cwpq'
+                    _actr = self.cwpq_eval_actr
+
                 ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
                 ac = float(self.max_ac) * _actr.sample(ob, sg=True)
                 # Among the 100 values, take the one with the highest Q value (or Z value)
-                q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
-                index = q_value.argmax(0)
+                q_value = self.crit.QZ(ob, ac).mean(dim=1)
+
+                if which == 'maxq':
+                    index = q_value.argmax(0)
+                else:  # which == 'cwpq'
+                    weight = torch.exp(q_value / CRR_TEMP).clamp(min=0.01, max=1000.)
+                    index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
+
                 ac = ac[index]
-            else:
+
+            else:  # which == 'main'
                 _actr = self.main_eval_actr
                 ob = torch.Tensor(ob[None]).to(self.device)
                 ac = float(self.max_ac) * _actr.mode(ob, sg=True)
                 # Gaussian, so mode == mean, can use either interchangeably
+
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action
@@ -340,6 +356,8 @@ class CQLAgent(object):
                 alpha_ent_loss.backward()
                 self.log_alpha_ent_opt.step()
                 metrics['alpha_ent_loss'].append(alpha_ent_loss)
+
+        logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
@@ -470,11 +488,11 @@ class CQLAgent(object):
         if self.hps.cql_use_min_q_loss:
             # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
             # will be the first to be shrinked)
-            min_crit_loss += (torch.logsumexp(cql_cat_q / TEMPERATURE, dim=1).mean() *
-                              self.hps.cql_min_q_weight * TEMPERATURE)
+            min_crit_loss += (torch.logsumexp(cql_cat_q / CQL_TEMP, dim=1).mean() *
+                              self.hps.cql_min_q_weight * CQL_TEMP)
             if self.hps.clipped_double:
-                min_twin_loss += (torch.logsumexp(cql_cat_twin_q / TEMPERATURE, dim=1).mean() *
-                                  self.hps.cql_min_q_weight * TEMPERATURE)
+                min_twin_loss += (torch.logsumexp(cql_cat_twin_q / CQL_TEMP, dim=1).mean() *
+                                  self.hps.cql_min_q_weight * CQL_TEMP)
 
         if self.hps.cql_use_max_q_loss:
             # Piece #2: maximize the Q-function on points in the offline dataset
@@ -496,6 +514,8 @@ class CQLAgent(object):
                 alpha_pri_loss.backward(retain_graph=True)
                 self.log_alpha_pri_opt.step()
                 metrics['alpha_pri_loss'].append(alpha_pri_loss)
+
+        logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
 
         # Piece #3: Add the new losses to the vanilla ones, i.e. the traditional TD errors to minimize
         crit_loss += min_crit_loss
@@ -547,6 +567,8 @@ class CQLAgent(object):
         for param, eval_param in zip(self.actr.parameters(), self.main_eval_actr.parameters()):
             eval_param.data.copy_(param.data)
         for param, eval_param in zip(self.actr.parameters(), self.maxq_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.actr.parameters(), self.cwpq_eval_actr.parameters()):
             eval_param.data.copy_(param.data)
 
     def save(self, path, iters_so_far):

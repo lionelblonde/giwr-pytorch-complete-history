@@ -91,6 +91,12 @@ class DDPGAgent(object):
         sync_with_root(self.actr)
         self.targ_actr = Actor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
+        self.main_eval_actr = Actor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.maxq_eval_actr = Actor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.cwpq_eval_actr = Actor(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
+        self.main_eval_actr.load_state_dict(self.actr.state_dict())
+        self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
+        self.cwpq_eval_actr.load_state_dict(self.actr.state_dict())
 
         self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
@@ -259,18 +265,29 @@ class DDPGAgent(object):
             )
         return batch
 
-    def predict(self, ob, apply_noise):
+    def predict(self, ob, apply_noise, which):
         """Predict an action, with or without perturbation,
         and optionaly compute and return the associated QZ value.
         """
-        # Create tensor from the state (`require_grad=False` by default)
         ob = torch.Tensor(ob[None]).to(self.device)
-        if apply_noise and self.param_noise is not None:
-            # Predict following a parameter-noise-perturbed actor
-            ac = self.pnp_actr.act(ob)
+        # Predict the action
+        if apply_noise:
+            if apply_noise and self.param_noise is not None:
+                # Predict following a parameter-noise-perturbed actor
+                ac = self.pnp_actr.act(ob)
+            else:
+                # Predict following the non-perturbed actor
+                ac = self.actr.act(ob)
         else:
-            # Predict following the non-perturbed actor
-            ac = self.actr.act(ob)
+            if which == 'maxq':
+                _actr = self.maxq_eval_actr
+            elif which == 'cwpq':
+                _actr = self.cwpq_eval_actr
+            else:  # which == 'main'
+                _actr = self.main_eval_actr
+
+            ac = _actr.act(ob)
+
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         if apply_noise and self.ac_noise is not None:
@@ -510,12 +527,11 @@ class DDPGAgent(object):
             self.twin_opt.step()
 
         if update_actor:
-
             self.actr_opt.step()
 
-            steps_so_far = iters_so_far if self.hps.offline else iters_so_far * self.hps.rollout_len
-            _lr = self.actr_sched.step(steps_so_far=steps_so_far)
-            logger.info(f"lr is {_lr} after {iters_so_far} iters")
+        steps_so_far = iters_so_far if self.hps.offline else iters_so_far * self.hps.rollout_len
+        _lr = self.actr_sched.step(steps_so_far=steps_so_far)
+        logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
         # Update target nets
         self.update_target_net(iters_so_far)
@@ -546,6 +562,14 @@ class DDPGAgent(object):
                 self.targ_crit.load_state_dict(self.crit.state_dict())
                 if self.hps.clipped_double:
                     self.targ_twin.load_state_dict(self.twin.state_dict())
+
+    def update_eval_nets(self):
+        for param, eval_param in zip(self.actr.parameters(), self.main_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.actr.parameters(), self.maxq_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.actr.parameters(), self.cwpq_eval_actr.parameters()):
+            eval_param.data.copy_(param.data)
 
     def adapt_param_noise(self):
         """Adapt the parameter noise standard deviation"""
