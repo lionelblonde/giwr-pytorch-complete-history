@@ -20,7 +20,7 @@ from agents.rnd import RandomNetworkDistillation
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 CQL_TEMP = 1.0
 EPS_CE = 1e-6
-U_ESTIM_SAMPLES = 10
+U_ESTIM_SAMPLES = 4
 CRR_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
 
@@ -415,6 +415,7 @@ class PTSOAgent(object):
             iws = torch.Tensor(batch['iws']).to(self.device)
         if self.hps.n_step_returns:
             td_len = torch.Tensor(batch['td_len']).to(self.device)
+            next_state_td1 = torch.Tensor(batch['obs1_td1']).to(self.device)
         else:
             td_len = torch.ones_like(done).to(self.device)
 
@@ -594,12 +595,13 @@ class PTSOAgent(object):
             if self.hps.clipped_double:
                 twin_loss = twin_mse_td_errors.mean()
 
+        if self.hps.ptso_q_min_scale > 0 or self.hps.ptso_q_max_scale > 0:
+            ptso_ac, ptso_logp = self.ac_factory(self.actr, state, 1)  # do not inflate the state here
+
         if self.hps.cql_use_min_q_loss:
             # Add CQL contribution (rest is pretty much exactly SAC)
             # Actions and log-probabilities
             cql_ac, cql_logp = self.ac_factory(self.actr, state, self.hps.cql_state_inflate)
-            if self.hps.ptso_q_min_scale > 0 or self.hps.ptso_q_max_scale > 0:
-                ptso_ac, ptso_logp = self.ac_factory(self.actr, state, 1)  # do not inflate the state here
             cql_next_ac, cql_next_logp = self.ac_factory(self.actr, next_state, self.hps.cql_state_inflate)
             cql_rand_ac = torch.Tensor(self.hps.batch_size * self.hps.cql_state_inflate,
                                        self.ac_dim).uniform_(-self.max_ac, self.max_ac).to(self.device)
@@ -617,18 +619,10 @@ class PTSOAgent(object):
                 ptso_q_min = self.q_cb_factory(
                     self.crit, state, ptso_ac, self.actr, ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min
                 )
-            if self.hps.ptso_q_max_scale > 0:
-                ptso_q_max = self.q_cb_factory(
-                    self.crit, state, ptso_ac, self.actr, ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max
-                )
             if self.hps.clipped_double:
                 if self.hps.ptso_q_min_scale > 0:
                     ptso_twin_q_min = self.q_cb_factory(
                         self.twin, state, ptso_ac, self.actr, ucb_or_lcb=True, u_scale=self.hps.ptso_u_scale_q_min
-                    )
-                if self.hps.ptso_q_max_scale > 0:
-                    ptso_twin_q_max = self.q_cb_factory(
-                        self.twin, state, ptso_ac, self.actr, ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max
                     )
 
             # Concatenate every Q-values estimates into one big vector that we'll later try to shrink
@@ -705,10 +699,16 @@ class PTSOAgent(object):
 
             min_crit_loss -= (q.mean() * self.hps.cql_min_q_weight)
             if self.hps.ptso_q_max_scale > 0:
+                ptso_q_max = self.q_cb_factory(
+                    self.crit, state, ptso_ac, self.actr, ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max
+                )
                 min_crit_loss -= (ptso_q_max.mean() * self.hps.ptso_q_max_scale)
             if self.hps.clipped_double:
                 min_twin_loss -= (twin_q.mean() * self.hps.cql_min_q_weight)
                 if self.hps.ptso_q_max_scale > 0:
+                    ptso_twin_q_max = self.q_cb_factory(
+                        self.twin, state, ptso_ac, self.actr, ucb_or_lcb=False, u_scale=self.hps.ptso_u_scale_q_max
+                    )
                     min_twin_loss -= (ptso_twin_q_max.mean() * self.hps.ptso_q_max_scale)
 
             if self.hps.cql_use_adaptive_alpha_pri:
@@ -804,7 +804,6 @@ class PTSOAgent(object):
 
         # We don't use the twin critic past this point, to same on evalutations and matrix multiplications
 
-        assert not self.hps.n_step_returns
         # Depending on a hyper-parameter, use the target critics in `targ_u` calculation, or not at all here
         crit_in_ube_targ = self.targ_crit if self.hps.ptso_use_targ_for_u else self.crit
         # Depending on a hyper-parameter, use the action from the behavior policy, or from the actor
@@ -820,7 +819,13 @@ class PTSOAgent(object):
             v_q = torch.bmm(torch.bmm(_new_phi_t,
                                       inflated_precision),
                             _new_phi).squeeze(-1)
-            u_prime = crit_in_ube_targ.wrap_with_u_head(crit_in_ube_targ.phi(next_state, next_action))
+            if self.hps.n_step_returns:
+                _next_state = next_state_td1
+                _next_action = float(self.max_ac) * self.actr.sample(_next_state, sg=True)
+            else:
+                _next_state = next_state
+                _next_action = next_action
+            u_prime = crit_in_ube_targ.wrap_with_u_head(crit_in_ube_targ.phi(_next_state, _next_action))
             targ_u = (v_q + ((self.hps.gamma ** 2) * (1. - done) * u_prime)).clamp(min=0.)
             # Note, we clamp for the target to be non-negative, to urge the prediction to always be non-negative
         u_pred = self.crit.wrap_with_u_head(self.crit.phi(state, action).detach())  # can only update the output head
@@ -919,44 +924,37 @@ class PTSOAgent(object):
                     crr_q = crr_q.mean(dim=1, keepdim=True)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
                 if 'max' in self.hps.base_pi_loss:
-                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).max(dim=1).values.detach()
+                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).max(dim=1).values
                 else:
-                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1).detach()
+                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1)
                 crr_adv = crr_q - emp_adv_from_actr
                 if 'binary' in self.hps.base_pi_loss:
                     crr_adv = 1. * crr_adv.gt(0.)  # trick to easily cast to float
                 else:  # only other case: exp
                     crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
-                actr_loss = -self.actr.logp(state, action) * crr_adv
+                actr_loss = -self.actr.logp(state, action) * crr_adv.detach()  # detach just in case
             else:
                 raise NotImplementedError("invalid base loss for policy improvement.")
 
             # If opted in, add the uncertainty contribution in the policy improvement loss
             if self.hps.ptso_u_scale_p_i > 0:
 
-                if self.hps.ptso_use_unexpected_uncertainty:
-                    # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
-                    u_u_ac, _ = self.ac_factory(self.actr, state, U_ESTIM_SAMPLES)
-                    expected_u_from_actr = self.u_factory(self.crit, state, u_u_ac).mean(dim=1).detach()
+                # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
+                u_u_ac, _ = self.ac_factory(self.actr, state, U_ESTIM_SAMPLES)
+                u_u_from_actr = self.u_factory(self.crit, state, u_u_ac).detach()
 
                 if self.hps.ptso_u_pi_sample_or_logp:
                     if self.hps.ptso_use_unexpected_uncertainty:
                         actr_loss += (self.hps.ptso_u_scale_p_i *
-                                      (u_from_actr - expected_u_from_actr))
+                                      (u_from_actr - u_u_from_actr.mean(dim=1)).gt(0.).detach() *
+                                      torch.exp(u_from_actr / CRR_TEMP).clamp(max=20.))
                     else:
                         actr_loss += (self.hps.ptso_u_scale_p_i *
                                       u_from_actr)
                 else:
-                    phi_from_behav = self.crit.phi(state, action)
-                    u_from_behav = self.crit.wrap_with_u_head(phi_from_behav).clamp(min=1e-8).sqrt()
-                    if self.hps.ptso_use_unexpected_uncertainty:
-                        actr_loss += (self.hps.ptso_u_scale_p_i *
-                                      self.actr.logp(state, action) *
-                                      (u_from_behav - expected_u_from_actr))
-                    else:
-                        actr_loss += (self.hps.ptso_u_scale_p_i *
-                                      self.actr.logp(state, action) *
-                                      u_from_behav)
+                    actr_loss += (self.hps.ptso_u_scale_p_i *
+                                  self.actr.logp(state, action_from_actr.detach()) *
+                                  (u_from_actr - u_u_from_actr.max(dim=1).values).gt(0.).detach())
 
             actr_loss = actr_loss.mean()
         else:
