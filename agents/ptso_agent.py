@@ -1,5 +1,6 @@
 from collections import defaultdict
 import os.path as osp
+from copy import copy
 
 import numpy as np
 import torch
@@ -113,6 +114,12 @@ class PTSOAgent(object):
             self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
             self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
+        # First create another set of hyper-parameters in which the critic is non-distributional
+        # and then create a critic to be trained via Monte Carlo estimation
+        _hps = copy(self.hps)
+        _hps.use_c51 = False
+        _hps.use_qr = False
+        self.mc_crit = Critic(self.env, _hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
 
         self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
@@ -147,7 +154,10 @@ class PTSOAgent(object):
 
         # Load the offline dataset in memory
         assert to_load_in_memory is not None
-        self.replay_buffer.load(to_load_in_memory)
+        self.replay_buffer.load(to_load_in_memory['dataset'])
+
+        # Also load the datatset segmented in trajectories
+        self.sequential_dataset = to_load_in_memory['sequential_dataset']
 
         # Set up the optimizers
         self.actr_opt = torch.optim.Adam(self.actr.parameters(),
@@ -161,6 +171,8 @@ class PTSOAgent(object):
                                              weight_decay=self.hps.wd_scale)
 
         self.u_opt = torch.optim.Adam(self.crit.u_trainable_params, lr=1e-3)
+
+        self.mc_crit_opt = torch.optim.Adam(self.mc_crit.q_trainable_params, lr=3e-4)
 
         if self.hps.cql_use_adaptive_alpha_ent:  # cql choice: same lr as actor
             self.log_alpha_ent_opt = torch.optim.Adam([self.log_alpha_ent],
@@ -246,6 +258,7 @@ class PTSOAgent(object):
 
     def store_transition(self, transition):
         """Store the transition in memory and update running moments"""
+        assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
         # Update the observation normalizer
@@ -305,6 +318,8 @@ class PTSOAgent(object):
                     q_value -= self.hps.ptso_u_scale_p_i * u_value
 
                 if which == 'maxq':
+                    q_mean = q_value.mean(dim=0)  # scalar
+                    mc_q_mean = self.mc_crit.QZ(ob, ac).mean()  # scalar
                     index = q_value.argmax(0)
                 else:  # which == 'cwpq'
                     weight = torch.exp(q_value / CRR_TEMP).clamp(min=0.01, max=1000.)
@@ -322,7 +337,13 @@ class PTSOAgent(object):
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action
         ac = ac.clip(-self.max_ac, self.max_ac)
-        return ac
+
+        if which == 'maxq':
+            return {'ac': ac,
+                    'q_mean': q_mean.cpu().detach().numpy().flatten(),
+                    'mc_q_mean': mc_q_mean.cpu().detach().numpy().flatten()}
+        else:
+            return ac
 
     def ac_factory(self, actr, ob, inflate):
         _ob = ob.unsqueeze(1).repeat(1, inflate, 1).view(ob.shape[0] * inflate, ob.shape[1])
@@ -799,7 +820,7 @@ class PTSOAgent(object):
         if self.hps.prioritized_replay:
             metrics['iws'].append(iws)
 
-        # Piece #4 (PTSO): uncertainty via Uncertainty Bellman Equation
+        # Piece #4 (PTSO): uncertainty via Uncertainty Bellman Equation, with its own optimizer
         # The target of the Uncertainty Bellman Equation is the variance estimate of the error epsilon (paper)
 
         # We don't use the twin critic past this point, to same on evalutations and matrix multiplications
@@ -880,12 +901,32 @@ class PTSOAgent(object):
         if iters_so_far % self.hps.crit_targ_update_freq == 0:
             self.update_target_net(iters_so_far)
 
+        # Update the Monte-Carlo critic that serves as reference
+        # Sample a trajectory from the sequential dataset
+        i = torch.randint(low=0, high=len(self.sequential_dataset), size=(1,))
+        trajectory = self.sequential_dataset[i]
+        # Unpack the content of the sampled trajectory
+        mc_state = torch.Tensor(trajectory['obs0']).to(self.device)
+        mc_action = torch.Tensor(trajectory['acs']).to(self.device)
+        mc_rets = torch.Tensor(trajectory['rets'].copy()).to(self.device)  # 'copy' for numpy stride issue
+        # Assemble the Monte-Carlo Q estimate loss
+        mc_crit_loss = F.mse_loss(self.mc_crit.QZ(mc_state, mc_action), mc_rets)
+
+        self.mc_crit_opt.zero_grad()
+        mc_crit_loss.backward()
+        self.mc_crit_opt.step()
+
         # Only update the policy after a certain number of iteration (CQL codebase: 20000)
         # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
 
         # Actor loss
         if iters_so_far >= self.hps.warm_start:
             # Use offline RL loss
+
+            # Log the Monte-Carlo Q estimate at the state from the minibatch and predicted action
+            mc_q_from_actr = self.mc_crit.QZ(state, action_from_actr)
+            metrics['mc_q_mean'].append(mc_q_from_actr.mean())
+            # We chose not to log the loss nor the std, min and max values of the tensor
 
             # For monitoring purposes, evaluate Q at the agent's action
             # Even if unused by the selected loss thereafter, it is worth the evaluation cost

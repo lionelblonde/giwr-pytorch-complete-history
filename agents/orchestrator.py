@@ -90,10 +90,24 @@ def ep_generator(env, agent, render, record, which):
     acs = []
     env_rews = []
 
+    # Not necessarily used
+    qs = []
+    mc_qs = []
+
     while True:
 
         # Predict action
-        ac = agent.predict(ob, apply_noise=False, which=which)
+        _ac = agent.predict(ob, apply_noise=False, which=which)
+
+        if isinstance(_ac, dict):
+            ac = _ac['ac']
+            q = _ac['q_mean']
+            mc_q = _ac['mc_q_mean']
+            qs.append(q)
+            mc_qs.append(mc_q)
+        else:
+            ac = _ac
+
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
@@ -125,6 +139,9 @@ def ep_generator(env, agent, render, record, which):
                    "env_rews": env_rews,
                    "ep_len": cur_ep_len,
                    "ep_env_ret": cur_ep_env_ret}
+            if isinstance(_ac, dict):
+                out.update({'qs': np.array(qs).mean(),
+                            'mc_qs': np.array(mc_qs).mean()})
             if record:
                 out.update({"obs_render": obs_render})
 
@@ -366,11 +383,12 @@ def learn(args,
                     d['actr_losses'].append(metrics['actr_loss'])
                     d['crit_losses'].append(metrics['crit_loss'])
                     if iters_so_far >= agent.hps.warm_start:
-                        d['q_stats_mean'].append(metrics['q_mean'])
-                        d['q_stats_std'].append(metrics['q_std'])
-                        d['q_stats_min'].append(metrics['q_min'])
-                        d['q_stats_max'].append(metrics['q_max'])
                         if args.algo.split('_')[0] == 'ptso':
+                            d['mc_q_stats_mean'].append(metrics['mc_q_mean'])
+                            d['q_stats_mean'].append(metrics['q_mean'])
+                            d['q_stats_std'].append(metrics['q_std'])
+                            d['q_stats_min'].append(metrics['q_min'])
+                            d['q_stats_max'].append(metrics['q_max'])
                             if agent.hps.ptso_use_or_monitor_grad_pen:
                                 d['phi_gradnorm_s'].append(metrics['phi_gradnorm_s'])
                                 d['phi_gradnorm_a'].append(metrics['phi_gradnorm_a'])
@@ -409,6 +427,8 @@ def learn(args,
                     d['main_eval_env_ret'].append(main_eval_ep['ep_env_ret'])
                     d['maxq_eval_env_ret'].append(maxq_eval_ep['ep_env_ret'])
                     d['cwpq_eval_env_ret'].append(cwpq_eval_ep['ep_env_ret'])
+                    d['qs'].append(maxq_eval_ep['qs'])
+                    d['mc_qs'].append(maxq_eval_ep['mc_qs'])
                 main_eval_deque.append(np.mean(d['main_eval_env_ret']))
                 maxq_eval_deque.append(np.mean(d['maxq_eval_env_ret']))
                 cwpq_eval_deque.append(np.mean(d['cwpq_eval_env_ret']))
@@ -429,11 +449,12 @@ def learn(args,
             logger.record_tabular(_str, step)
 
             if iters_so_far - 1 >= agent.hps.warm_start:
-                logger.record_tabular('q_stats_mean', np.mean(d['q_stats_mean']))
-                logger.record_tabular('q_stats_std', np.mean(d['q_stats_std']))
-                logger.record_tabular('q_stats_min', np.mean(d['q_stats_min']))
-                logger.record_tabular('q_stats_max', np.mean(d['q_stats_max']))
                 if args.algo.split('_')[0] == 'ptso':
+                    logger.record_tabular('mc_q_stats_mean', np.mean(d['mc_q_stats_mean']))
+                    logger.record_tabular('q_stats_mean', np.mean(d['q_stats_mean']))
+                    logger.record_tabular('q_stats_std', np.mean(d['q_stats_std']))
+                    logger.record_tabular('q_stats_min', np.mean(d['q_stats_min']))
+                    logger.record_tabular('q_stats_max', np.mean(d['q_stats_max']))
                     if agent.hps.ptso_use_or_monitor_grad_pen:
                         logger.record_tabular('phi_gradnorm_s', np.mean(d['phi_gradnorm_s']))
                         logger.record_tabular('phi_gradnorm_a', np.mean(d['phi_gradnorm_a']))
@@ -456,6 +477,8 @@ def learn(args,
             logger.record_tabular('avg_main_eval_env_ret', np.mean(main_eval_deque))
             logger.record_tabular('avg_maxq_eval_env_ret', np.mean(maxq_eval_deque))
             logger.record_tabular('avg_cwpq_eval_env_ret', np.mean(cwpq_eval_deque))
+            logger.record_tabular('qs', np.mean(d['qs']))
+            logger.record_tabular('mc_qs', np.mean(d['mc_qs']))
             logger.info("dumping stats in .csv file")
             logger.dump_tabular()
 
@@ -482,13 +505,15 @@ def learn(args,
                 wandb.log({'twin_loss': np.mean(d['twin_losses'])},
                           step=step)
             if iters_so_far - 1 >= agent.hps.warm_start:
-                wandb.log({'q_stats_mean': np.mean(d['q_stats_mean']),
-                           'q_stats_std': np.mean(d['q_stats_std']),
-                           'q_stats_min': np.mean(d['q_stats_min']),
-                           'q_stats_max': np.mean(d['q_stats_max'])},
+                wandb.log({},
                           step=step)
                 if args.algo.split('_')[0] == 'ptso':
-                    wandb.log({'u_stats_mean': np.mean(d['u_stats_mean']),
+                    wandb.log({'mc_q_stats_mean': np.mean(d['mc_q_stats_mean']),
+                               'q_stats_mean': np.mean(d['q_stats_mean']),
+                               'q_stats_std': np.mean(d['q_stats_std']),
+                               'q_stats_min': np.mean(d['q_stats_min']),
+                               'q_stats_max': np.mean(d['q_stats_max']),
+                               'u_stats_mean': np.mean(d['u_stats_mean']),
                                'u_stats_std': np.mean(d['u_stats_std']),
                                'u_stats_min': np.mean(d['u_stats_min']),
                                'u_stats_max': np.mean(d['u_stats_max']),
@@ -513,7 +538,9 @@ def learn(args,
                        'cwpq_eval_env_ret': np.mean(d['cwpq_eval_env_ret']),
                        'avg_main_eval_env_ret': np.mean(main_eval_deque),
                        'avg_maxq_eval_env_ret': np.mean(maxq_eval_deque),
-                       'avg_cwpq_eval_env_ret': np.mean(cwpq_eval_deque)},
+                       'avg_cwpq_eval_env_ret': np.mean(cwpq_eval_deque),
+                       'eval_qs': np.mean(d['qs']),
+                       'eval_mc_qs': np.mean(d['mc_qs'])},
                       step=step)
 
             # Clear the iteration's running stats

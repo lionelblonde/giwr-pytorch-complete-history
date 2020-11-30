@@ -1,6 +1,7 @@
 import os
 import random
 from copy import copy
+from collections import defaultdict
 
 from mpi4py import MPI
 import numpy as np
@@ -9,6 +10,7 @@ import torch
 from helpers import logger
 from helpers.argparsers import argparser
 from helpers.experiment import ExperimentInitializer
+from helpers.math_util import discount
 from helpers.distributed_util import setup_mpi_gpus
 from helpers.env_makers import make_env
 from agents import orchestrator
@@ -68,7 +70,8 @@ def train(args):
     if args.offline:
         # Load the offline dataset
         if hasattr(env, 'get_dataset'):  # unique (a priori) to d4rl envs
-            to_load_in_memory = H.load_dict_h5py(args.dataset_path)
+            _dataset = H.load_dict_h5py(args.dataset_path)
+            to_load_in_memory = copy(_dataset)
             # Rename the keys to the ones the rest of the codebase use
             to_load_in_memory['obs0'] = to_load_in_memory.pop('observations')
             to_load_in_memory['acs'] = to_load_in_memory.pop('actions')
@@ -109,6 +112,37 @@ def train(args):
             to_load_in_memory['dones1'] = _dones1
             # Wrap each value into a numpy array
             to_load_in_memory = {k: np.array(v) for k, v in to_load_in_memory.items()}
+
+            if args.algo.split('_')[0] == 'ptso':
+
+                keys_of_interest = ['obs0', 'acs', 'rews']
+                to_load_in_memory_sequential = []
+                trajectory = defaultdict(list)
+                episode_step = 0
+                for i in range(to_load_in_memory['rews'].shape[0]):  # key arbitrarily chosen
+                    # Define termination triggers, due to timeout or terminating the episode through the MDP
+                    done_bool = bool(to_load_in_memory['dones1'][i])
+                    final_timestep = (episode_step == env._max_episode_steps - 1)
+
+                    if done_bool or final_timestep:
+                        episode_step = 0
+                        np_trajectory = {}
+                        for k in keys_of_interest:
+                            np_trajectory[k] = np.array(trajectory[k])
+                        # Add a key for the MC return and populate it with it
+                        np_trajectory['rets'] = np.expand_dims(discount(np_trajectory['rews'], args.gamma), axis=-1)
+                        # Add the formated trajectory to the list of trajectories
+                        to_load_in_memory_sequential.append(np_trajectory)
+                        # Initialize the next trajectory
+                        trajectory = defaultdict(list)
+
+                    for k in keys_of_interest:
+                        trajectory[k].append(to_load_in_memory[k][i])
+                    episode_step += 1
+
+                # Overwrite what is given to the agent
+                to_load_in_memory = {'dataset': to_load_in_memory, 'sequential_dataset': to_load_in_memory_sequential}
+
         else:
             if args.use_expert_demos:
                 to_load_in_memory = DemoDataset(
@@ -120,12 +154,14 @@ def train(args):
                 ).data
             else:
                 to_load_in_memory = H.load_dict_h5py(args.dataset_path)
-        # Make sure the loaded data structure is a disctionary
-        assert isinstance(to_load_in_memory, dict), "must be a dictionary"
+
+        # Define new memory size
+        _to_load_in_memory = to_load_in_memory['dataset'] if 'dataset' in to_load_in_memory else to_load_in_memory
+        new_mem_size = _to_load_in_memory['rews'].shape[0]  # key arbitrarily chosen
+        old_mem_size = copy(args.mem_size)
+        logger.info("over-writting memory size: {} -> {}".format(old_mem_size, new_mem_size))
         # Overwrite the memory size hyper-parameter in the offline setting
-        old_memory_size = copy(args.mem_size)
-        args.mem_size = to_load_in_memory['rews'].shape[0]  # key arbitrarily chosen
-        logger.info("over-written memory size: {} -> {}".format(old_memory_size, args.mem_size))
+        args.mem_size = new_mem_size
     else:
         to_load_in_memory = None
 

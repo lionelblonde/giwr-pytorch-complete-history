@@ -326,10 +326,6 @@ class CQLAgent(object):
                 if self.hps.clipped_double:
                     twin_q_from_actr = self.twin.QZ(state, action_from_actr)
                     q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
-                metrics['q_mean'].append(q_from_actr.mean())
-                metrics['q_std'].append(q_from_actr.std())
-                metrics['q_min'].append(q_from_actr.min())
-                metrics['q_max'].append(q_from_actr.max())
                 actr_loss = ((self.alpha_ent * log_prob) - q_from_actr).mean()
             else:
                 # Use behavioral cloning losses
