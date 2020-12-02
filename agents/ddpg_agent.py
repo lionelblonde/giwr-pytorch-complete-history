@@ -123,6 +123,7 @@ class DDPGAgent(object):
             'acs': (self.ac_dim,),
             'rews': (1,),
             'dones1': (1,),
+            'rets': (1,),
         }
         self.replay_buffer = self.setup_replay_buffer(shapes)
 
@@ -234,6 +235,7 @@ class DDPGAgent(object):
 
     def store_transition(self, transition):
         """Store the transition in memory and update running moments"""
+        assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
         # Update the observation normalizer

@@ -145,6 +145,7 @@ class ReplayBuffer(object):
             # logger.info("\n\n")
 
         la_batch['idxs'] = transitions['idxs']
+        la_batch['rets'] = transitions['rets']
 
         # Wrap every value with `array_min2d`
         la_batch = {k: array_min2d(v) for k, v in la_batch.items()}

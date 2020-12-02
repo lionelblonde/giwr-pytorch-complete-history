@@ -126,20 +126,12 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--cql_targ_lower_bound', type=float, default=1.)
     parser.add_argument('--cql_min_q_weight', type=float, default=5.)
     parser.add_argument('--cql_state_inflate', type=int, default=10)
-    boolean_flag(parser, 'cql_use_version_3', default=True)
-    boolean_flag(parser, 'cql_use_min_q_loss', default=True)
-    boolean_flag(parser, 'cql_use_max_q_loss', default=True)
 
     boolean_flag(parser, 'ptso_use_targ_for_u', default=False)
     parser.add_argument('--ptso_num_mat_updates_per_iter', type=int, default=100)
     parser.add_argument('--ptso_u_scale_p_i', type=float, default=0.)
-    parser.add_argument('--ptso_u_scale_q_min', type=float, default=0.)
-    parser.add_argument('--ptso_u_scale_q_max', type=float, default=0.)
     boolean_flag(parser, 'ptso_u_pi_sample_or_logp', default=False)
     boolean_flag(parser, 'ptso_use_u_inference_time', default=False)
-    parser.add_argument('--ptso_q_min_scale', type=float, default=0.)
-    parser.add_argument('--ptso_q_max_scale', type=float, default=0.)
-    boolean_flag(parser, 'ptso_use_behav_ac_in_phi', default=False)
     boolean_flag(parser, 'ptso_use_rnd_monitoring', default=False)
     boolean_flag(parser, 'ptso_use_unexpected_uncertainty', default=True)
     boolean_flag(parser, 'ptso_use_or_monitor_grad_pen', default=False)
@@ -148,6 +140,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--ptso_grad_pen_targ_s', type=float, default=0.)
     parser.add_argument('--ptso_grad_pen_targ_a', type=float, default=0.)
 
+    parser.add_argument('--base_pe_loss', type=str, default=None)
     parser.add_argument('--base_pi_loss', type=str, default=None)
 
     return parser

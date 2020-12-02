@@ -14,7 +14,6 @@ from helpers.math_util import discount
 from helpers.distributed_util import setup_mpi_gpus
 from helpers.env_makers import make_env
 from agents import orchestrator
-from helpers.dataset import DemoDataset
 from agents.ddpg_agent import DDPGAgent
 from agents.sac_agent import SACAgent
 from agents.bcq_agent import BCQAgent
@@ -23,6 +22,9 @@ from agents.brac_agent import BRACAgent
 from agents.cql_agent import CQLAgent
 from agents.ptso_agent import PTSOAgent
 from helpers import h5_util as H
+
+
+SKIP_TIMEOUT_TRANSITIONS = True
 
 
 def train(args):
@@ -68,100 +70,116 @@ def train(args):
     env = make_env(args.env_id, worker_seed)
 
     if args.offline:
+        # Ensure the environment possesses a dataset in the D4RL suite
+        assert hasattr(env, 'get_dataset')  # unique (a priori) to d4rl envs
         # Load the offline dataset
-        if hasattr(env, 'get_dataset'):  # unique (a priori) to d4rl envs
-            _dataset = H.load_dict_h5py(args.dataset_path)
-            to_load_in_memory = copy(_dataset)
-            # Rename the keys to the ones the rest of the codebase use
-            to_load_in_memory['obs0'] = to_load_in_memory.pop('observations')
-            to_load_in_memory['acs'] = to_load_in_memory.pop('actions')
-            to_load_in_memory['rews'] = to_load_in_memory.pop('rewards')
-            to_load_in_memory['dones1'] = to_load_in_memory.pop('terminals')
-            # Augment with the 'obs1' key, adding the next observation in every transition
-            _obs0 = []
-            _acs = []
-            _obs1 = []
-            _rews = []
-            _dones1 = []
-            ep_step = 0
-            for i in range(to_load_in_memory['rews'].shape[0] - 1):  # key arbitrarily chosen
-                ob = to_load_in_memory['obs0'][i]
-                ac = to_load_in_memory['acs'][i]
-                next_ob = to_load_in_memory['obs0'][i+1]
-                rew = to_load_in_memory['rews'][i]
-                done = bool(to_load_in_memory['dones1'][i])
-                # Treat termination cases appropriately
-                final_timestep = (ep_step == env._max_episode_steps - 1)
-                if final_timestep or done:
-                    ep_step = 0
-                    if final_timestep:
-                        # Exclude transitions that terminate by timeout
-                        continue
-                # Add the transition to the dataset
-                _obs0.append(ob)
-                _acs.append(ac)
-                _obs1.append(next_ob)
-                _rews.append(rew)
-                _dones1.append(done)
-                ep_step += 1
-            # Overwrite the content of the dataset
-            to_load_in_memory['obs0'] = _obs0
-            to_load_in_memory['acs'] = _acs
-            to_load_in_memory['obs1'] = _obs1
-            to_load_in_memory['rews'] = _rews
-            to_load_in_memory['dones1'] = _dones1
-            # Wrap each value into a numpy array
-            to_load_in_memory = {k: np.array(v) for k, v in to_load_in_memory.items()}
+        _dataset = H.load_dict_h5py(args.dataset_path)
+        to_load_in_memory = copy(_dataset)
+        # Rename the keys to the ones the rest of the codebase use
+        to_load_in_memory['obs0'] = to_load_in_memory.pop('observations')
+        to_load_in_memory['acs'] = to_load_in_memory.pop('actions')
+        to_load_in_memory['rews'] = to_load_in_memory.pop('rewards')
+        to_load_in_memory['dones1'] = to_load_in_memory.pop('terminals')
+        # Augment with the 'obs1' key, adding the next observation in every transition
+        _obs0 = []
+        _acs = []
+        _obs1 = []
+        _rews = []
+        _dones1 = []
+        ep_step = 0
+        for i in range(to_load_in_memory['rews'].shape[0] - 1):  # key arbitrarily chosen
+            ob = to_load_in_memory['obs0'][i]
+            ac = to_load_in_memory['acs'][i]
+            next_ob = to_load_in_memory['obs0'][i+1]
+            rew = to_load_in_memory['rews'][i]
+            done = bool(to_load_in_memory['dones1'][i])
+            # Treat termination cases appropriately
+            final_timestep = (ep_step == env._max_episode_steps - 1)
+            if SKIP_TIMEOUT_TRANSITIONS and final_timestep:
+                # Exclude transitions that terminate by timeout
+                ep_step = 0
+                continue
+            if done or final_timestep:
+                ep_step = 0
+            # Add the transition to the dataset
+            _obs0.append(ob)
+            _acs.append(ac)
+            _obs1.append(next_ob)
+            _rews.append(rew)
+            _dones1.append(done)
+            ep_step += 1
+        # Overwrite the content of the dataset
+        to_load_in_memory['obs0'] = _obs0
+        to_load_in_memory['acs'] = _acs
+        to_load_in_memory['obs1'] = _obs1
+        to_load_in_memory['rews'] = _rews
+        to_load_in_memory['dones1'] = _dones1
+        # Wrap each value into a numpy array
+        to_load_in_memory = {k: np.array(v) for k, v in to_load_in_memory.items()}
+        ini_num_transitions = to_load_in_memory['rews'].shape[0]
+        logger.info(f"the dataset contains {ini_num_transitions} transitions")
 
-            if args.algo.split('_')[0] == 'ptso':
-
-                keys_of_interest = ['obs0', 'acs', 'rews']
-                to_load_in_memory_sequential = []
-                trajectory = defaultdict(list)
+        # We now create a list of all the complete trajectories present in the dataset,
+        # calculate the Monte-Carlo return for each transition, and insert them with their own key.
+        # Initialize the list of complete trajectories in the dataset, and first trajectory to fill
+        trajectory_list = []
+        trajectory = defaultdict(list)
+        episode_step = 0
+        for i in range(to_load_in_memory['rews'].shape[0]):  # key arbitrarily chosen
+            # Define termination triggers, due to timeout or terminating the episode through the MDP
+            done_bool = bool(to_load_in_memory['dones1'][i])
+            final_timestep = (episode_step == env._max_episode_steps - 1)
+            # When arrived at the end of the episode, add the completed trajectory to the list
+            if done_bool or final_timestep:
                 episode_step = 0
-                for i in range(to_load_in_memory['rews'].shape[0]):  # key arbitrarily chosen
-                    # Define termination triggers, due to timeout or terminating the episode through the MDP
-                    done_bool = bool(to_load_in_memory['dones1'][i])
-                    final_timestep = (episode_step == env._max_episode_steps - 1)
+                np_trajectory = {}
+                for k in to_load_in_memory:
+                    np_trajectory[k] = np.array(trajectory[k])
+                # Add a key for the MC return and populate it with it
+                np_trajectory['rets'] = discount(np_trajectory['rews'], args.gamma)
+                # Add the formated trajectory to the list of trajectories
+                trajectory_list.append(np_trajectory)
+                # Initialize the next trajectory
+                trajectory = defaultdict(list)
+            # Add the transition to the current trajectory's dictionaries
+            for k in to_load_in_memory:
+                trajectory[k].append(to_load_in_memory[k][i])
+            episode_step += 1
+        logger.info(f"the dataset contains {len(trajectory_list)} completed trajectories")
+        logger.info(f"the dataset contains {len(trajectory['rews'])} orphan transitions")  # key arbitrarily chosen
 
-                    if done_bool or final_timestep:
-                        episode_step = 0
-                        np_trajectory = {}
-                        for k in keys_of_interest:
-                            np_trajectory[k] = np.array(trajectory[k])
-                        # Add a key for the MC return and populate it with it
-                        np_trajectory['rets'] = np.expand_dims(discount(np_trajectory['rews'], args.gamma), axis=-1)
-                        # Add the formated trajectory to the list of trajectories
-                        to_load_in_memory_sequential.append(np_trajectory)
-                        # Initialize the next trajectory
-                        trajectory = defaultdict(list)
+        # Now that we have the Monte-Carlo returns associated with each transition of complete trajectories,
+        # we create a new dictionary containing only the data from these conplete trajectories, and leave
+        # the previous disctionaries intact, just in case we need them at some point.
+        # Note, if the last trajectory in the dataset is not complete (does not terminate), then it is discarded.
+        to_load_in_memory_only_completed = defaultdict(list)
+        for i in range(len(trajectory_list)):  # needs to be like this apparently, exception thing
+            for k in list(to_load_in_memory.keys()) + ['rets']:
+                to_load_in_memory_only_completed[k].extend(trajectory_list[i][k])
+        to_load_in_memory_only_completed = {k: np.array(v) for k, v in to_load_in_memory_only_completed.items()}
+        # Truncate the lists of the original dataset to only contain data from completed trajectories,
+        # which therefore only contain transitions augmented with Monte-Carlo returns.
+        for k in to_load_in_memory:
+            to_load_in_memory[k] = to_load_in_memory[k][:to_load_in_memory_only_completed[k].shape[0]]
+            # Verify that the slicing wroked as intended
+            assert np.all(to_load_in_memory_only_completed[k] == to_load_in_memory[k]), "size issue."
+        new_num_transitions = to_load_in_memory['rews'].shape[0]
+        logger.info(f"the dataset contains {new_num_transitions} transitions after removing orphans")
+        # Now that they are the same size, directly transfer the the  'rets' key and value to the original dataset
+        to_load_in_memory['rets'] = to_load_in_memory_only_completed['rets']
 
-                    for k in keys_of_interest:
-                        trajectory[k].append(to_load_in_memory[k][i])
-                    episode_step += 1
+        # Carry out anity-check on the shapes of what's in the dataset
+        canon_size = to_load_in_memory['rews'].shape[0]  # key arbitrarily chosen
+        for k, v in to_load_in_memory.items():
+            logger.info(f"key({k}) -> shape({v.shape})")
+            assert v.shape[0] == canon_size
 
-                # Overwrite what is given to the agent
-                to_load_in_memory = {'dataset': to_load_in_memory, 'sequential_dataset': to_load_in_memory_sequential}
-
-        else:
-            if args.use_expert_demos:
-                to_load_in_memory = DemoDataset(
-                    expert_path=args.expert_path,
-                    num_demos=args.num_demos,
-                    env=env,
-                    wrap_absorb=args.wrap_absorb,
-                    sub_rate=args.sub_rate,
-                ).data
-            else:
-                to_load_in_memory = H.load_dict_h5py(args.dataset_path)
-
+        # Summarize the changes
+        logger.info(f"the dataset went through these size changes: {ini_num_transitions} -> {new_num_transitions}")
         # Define new memory size
-        _to_load_in_memory = to_load_in_memory['dataset'] if 'dataset' in to_load_in_memory else to_load_in_memory
-        new_mem_size = _to_load_in_memory['rews'].shape[0]  # key arbitrarily chosen
-        old_mem_size = copy(args.mem_size)
-        logger.info("over-writting memory size: {} -> {}".format(old_mem_size, new_mem_size))
+        logger.info(f"over-writting memory size: {copy(args.mem_size)} -> {new_num_transitions}")
         # Overwrite the memory size hyper-parameter in the offline setting
-        args.mem_size = new_mem_size
+        args.mem_size = new_num_transitions
     else:
         to_load_in_memory = None
 

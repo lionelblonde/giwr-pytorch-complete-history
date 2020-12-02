@@ -180,9 +180,8 @@ class Spawner(object):
                           'offline', 'use_expert_demos', 'state_dependent_std', 'use_adaptive_alpha',
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
-                          'cql_use_adaptive_alpha_pri', 'cql_use_version_3', 'ptso_use_targ_for_u',
-                          'cql_use_min_q_loss', 'cql_use_max_q_loss',
-                          'ptso_u_pi_sample_or_logp', 'ptso_use_u_inference_time', 'ptso_use_behav_ac_in_phi',
+                          'cql_use_adaptive_alpha_pri', 'ptso_use_targ_for_u',
+                          'ptso_u_pi_sample_or_logp', 'ptso_use_u_inference_time',
                           'ptso_use_rnd_monitoring', 'ptso_use_unexpected_uncertainty',
                           'ptso_use_or_monitor_grad_pen']
 
@@ -363,20 +362,12 @@ class Spawner(object):
                 'cql_targ_lower_bound': self.config.get('cql_targ_lower_bound', 1.),
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
-                'cql_use_version_3': self.config.get('cql_use_version_3', True),
-                'cql_use_min_q_loss': self.config.get('cql_use_min_q_loss', True),
-                'cql_use_max_q_loss': self.config.get('cql_use_max_q_loss', True),
 
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
                 'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
                 'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
-                'ptso_u_scale_q_min': self.config.get('ptso_u_scale_q_min', 0.),
-                'ptso_u_scale_q_max': self.config.get('ptso_u_scale_q_max', 0.),
                 'ptso_u_pi_sample_or_logp': self.config.get('ptso_u_pi_sample_or_logp', False),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
-                'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
-                'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),
-                'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
                 'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
@@ -385,6 +376,7 @@ class Spawner(object):
                 'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
                 'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
 
+                'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
             }
         else:
@@ -485,20 +477,12 @@ class Spawner(object):
                 'cql_targ_lower_bound': self.config.get('cql_targ_lower_bound', 1.),
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
-                'cql_use_version_3': self.config.get('cql_use_version_3', True),
-                'cql_use_min_q_loss': self.config.get('cql_use_min_q_loss', True),
-                'cql_use_max_q_loss': self.config.get('cql_use_max_q_loss', True),
 
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
                 'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
                 'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
-                'ptso_u_scale_q_min': self.config.get('ptso_u_scale_q_min', 0.),
-                'ptso_u_scale_q_max': self.config.get('ptso_u_scale_q_max', 0.),
                 'ptso_u_pi_sample_or_logp': self.config.get('ptso_u_pi_sample_or_logp', False),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
-                'ptso_q_min_scale': self.config.get('ptso_q_min_scale', 0.),
-                'ptso_q_max_scale': self.config.get('ptso_q_max_scale', 0.),
-                'ptso_use_behav_ac_in_phi': self.config.get('ptso_use_behav_ac_in_phi', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
                 'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
@@ -507,6 +491,7 @@ class Spawner(object):
                 'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
                 'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
 
+                'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
             }
 
