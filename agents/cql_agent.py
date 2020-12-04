@@ -16,6 +16,7 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 CQL_TEMP = 1.0
+CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 
 
@@ -261,7 +262,7 @@ class CQLAgent(object):
                 if which == 'maxq':
                     index = q_value.argmax(0)
                 else:  # which == 'cwpq'
-                    weight = torch.exp(q_value / CRR_TEMP).clamp(min=0.01, max=1000.)
+                    weight = torch.exp(q_value / CWPQ_TEMP).clamp(min=0.01, max=1_000_000_000.)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -313,47 +314,45 @@ class CQLAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
-        if update_actor:
+        action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
+        log_prob = self.actr.logp(state, action_from_actr)
 
-            action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-            log_prob = self.actr.logp(state, action_from_actr)
+        # Only update the policy after a certain number of iteration (CQL codebase: 20000)
+        # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
 
-            # Only update the policy after a certain number of iteration (CQL codebase: 20000)
-            # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
+        # Actor loss
+        if iters_so_far >= self.hps.warm_start:
+            # Use full-blown loss
+            q_from_actr = self.crit.QZ(state, action_from_actr)
+            if self.hps.clipped_double:
+                twin_q_from_actr = self.twin.QZ(state, action_from_actr)
+                q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
+            actr_loss = ((self.alpha_ent * log_prob) - q_from_actr).mean()
+        else:
+            # Use behavioral cloning losses
+            actr_loss = (F.mse_loss(self.actr.logp(state, action).detach(), log_prob) +
+                         F.mse_loss(action, action_from_actr))
+        metrics['actr_loss'].append(actr_loss)
 
-            # Actor loss
-            if iters_so_far >= self.hps.warm_start:
-                # Use full-blown loss
-                q_from_actr = self.crit.QZ(state, action_from_actr)
-                if self.hps.clipped_double:
-                    twin_q_from_actr = self.twin.QZ(state, action_from_actr)
-                    q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
-                actr_loss = ((self.alpha_ent * log_prob) - q_from_actr).mean()
-            else:
-                # Use behavioral cloning losses
-                actr_loss = (F.mse_loss(self.actr.logp(state, action).detach(), log_prob) +
-                             F.mse_loss(action, action_from_actr))
-            metrics['actr_loss'].append(actr_loss)
+        self.actr_opt.zero_grad()
+        if self.hps.cql_use_adaptive_alpha_ent:
+            actr_loss.backward(retain_graph=True)  # double-checked: OK
+        else:
+            actr_loss.backward()
+        average_gradients(self.actr, self.device)
+        if self.hps.clip_norm > 0:
+            U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
+        self.actr_opt.step()
 
-            self.actr_opt.zero_grad()
-            if self.hps.cql_use_adaptive_alpha_ent:
-                actr_loss.backward(retain_graph=True)  # double-checked: OK
-            else:
-                actr_loss.backward()
-            average_gradients(self.actr, self.device)
-            if self.hps.clip_norm > 0:
-                U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
-            self.actr_opt.step()
+        _lr = self.actr_sched.step(steps_so_far=iters_so_far)
+        logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
-            _lr = self.actr_sched.step(steps_so_far=iters_so_far)
-            logger.info(f"lr is {_lr} after {iters_so_far} iters")
-
-            if self.hps.cql_use_adaptive_alpha_ent:
-                alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
-                self.log_alpha_ent_opt.zero_grad()
-                alpha_ent_loss.backward()
-                self.log_alpha_ent_opt.step()
-                metrics['alpha_ent_loss'].append(alpha_ent_loss)
+        if self.hps.cql_use_adaptive_alpha_ent:
+            alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
+            self.log_alpha_ent_opt.zero_grad()
+            alpha_ent_loss.backward()
+            self.log_alpha_ent_opt.step()
+            metrics['alpha_ent_loss'].append(alpha_ent_loss)
 
         logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
 

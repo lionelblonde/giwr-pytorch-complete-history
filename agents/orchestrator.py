@@ -392,6 +392,7 @@ def learn(args,
                     d['crit_losses'].append(metrics['crit_loss'])
                     if iters_so_far >= agent.hps.warm_start:
                         if args.algo.split('_')[0] == 'ptso':
+                            d['alpha_pri'].append(metrics['alpha_pri'])
                             d['mcq_fb_mean'].append(metrics['mcq_fb_mean'])
                             d['q_fb_mean'].append(metrics['q_fb_mean'])
                             d['q_fb_std'].append(metrics['q_fb_std'])
@@ -466,6 +467,7 @@ def learn(args,
 
             if iters_so_far - 1 >= agent.hps.warm_start:
                 if args.algo.split('_')[0] == 'ptso':
+                    logger.record_tabular('alpha_pri', np.mean(d['alpha_pri']))
                     logger.record_tabular('mcq_fb_mean', np.mean(d['mcq_fb_mean']))
                     logger.record_tabular('q_fb_mean', np.mean(d['q_fb_mean']))
                     logger.record_tabular('q_fb_std', np.mean(d['q_fb_std']))
@@ -530,7 +532,8 @@ def learn(args,
                           step=step)
             if iters_so_far - 1 >= agent.hps.warm_start:
                 if args.algo.split('_')[0] == 'ptso':
-                    wandb.log({'mcq_fb_mean': np.mean(d['mcq_fb_mean']),
+                    wandb.log({'alpha_pri': np.mean(d['alpha_pri']),
+                               'mcq_fb_mean': np.mean(d['mcq_fb_mean']),
                                'q_fb_mean': np.mean(d['q_fb_mean']),
                                'q_fb_std': np.mean(d['q_fb_std']),
                                'q_fb_min': np.mean(d['q_fb_min']),

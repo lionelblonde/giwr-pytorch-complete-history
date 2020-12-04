@@ -16,6 +16,7 @@ from agents.nets import perception_stack_parser, TanhGaussActor, ActorVAE, Criti
 
 EXPANSION = 4
 LOG_ALPHA_CLAMPS = [-5., 10.]
+CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 
 
@@ -249,7 +250,7 @@ class BEARAgent(object):
                 if which == 'maxq':
                     index = q_value.argmax(0)
                 else:  # which == 'cwpq'
-                    weight = torch.exp(q_value / CRR_TEMP).clamp(min=0.01, max=1000.)
+                    weight = torch.exp(q_value / CWPQ_TEMP).clamp(min=0.01, max=1_000_000_000.)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]

@@ -151,17 +151,7 @@ class Spawner(object):
         # Retrieve config from filesystem
         self.config = yaml.safe_load(open(self.args.config))
 
-        # Check if we need expert demos, or datasets, or neither
-        self.need_demos = self.config['use_expert_demos']
-        assert not self.need_demos or self.config['offline']
-        if self.need_demos:
-            self.num_demos = [int(i) for i in self.args.num_demos]
-            self.need_datasets = False
-        else:
-            self.num_demos = [0]  # arbitrary, only used for dim checking
-            # If we are not using demos but are in the offline setting, we need the datasets
-            if self.config['offline']:
-                self.need_datasets = True
+        self.need_datasets = self.config['offline']
 
         # Assemble wandb project name
         self.wandb_project = (self.config['logging']['wandb_project'].upper() + '-' +
@@ -177,11 +167,11 @@ class Spawner(object):
         self.bool_args = ['cuda', 'render', 'record', 'layer_norm', 'gauss_mixture',
                           'prioritized_replay', 'ranked', 'unreal', 'n_step_returns', 'obs_norm', 'ret_norm', 'popart',
                           'clipped_double', 'targ_actor_smoothing', 'use_c51', 'use_qr',
-                          'offline', 'use_expert_demos', 'state_dependent_std', 'use_adaptive_alpha',
+                          'offline', 'state_dependent_std', 'use_adaptive_alpha',
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri', 'ptso_use_targ_for_u',
-                          'ptso_u_pi_sample_or_logp', 'ptso_use_u_inference_time',
+                          'ptso_qprop_aggressive_eta', 'ptso_use_u_inference_time',
                           'ptso_use_rnd_monitoring', 'ptso_use_unexpected_uncertainty',
                           'ptso_use_or_monitor_grad_pen']
 
@@ -204,11 +194,6 @@ class Spawner(object):
         # Define the set of considered environments from the considered suite
         self.envs = ENV_BUNDLES[self.config['meta']['benchmark']][self.args.env_bundle]
 
-        if self.need_demos:
-            # Create the list of demonstrations associated with the environments
-            demo_dir = os.environ['DEMO_DIR']
-            self.demos = {k: os.path.join(demo_dir, k) for k in self.envs}
-
         if self.need_datasets:
             # Create the list of datasets associated with the environments
             assert self.config['meta']['benchmark'] == 'd4rl'
@@ -229,8 +214,6 @@ class Spawner(object):
             pass
 
         uuid = f"{hpmap['uuid']}.{gitsha}.{hpmap['env_id']}.{hpmap['algo']}_{self.args.num_workers}"
-        if self.need_demos:
-            uuid += f".demos{str(hpmap['num_demos']).zfill(3)}"
         uuid += f".seed{str(seed).zfill(2)}"
 
         hpmap_.update({'uuid': uuid})
@@ -239,19 +222,10 @@ class Spawner(object):
 
     def copy_and_add_env(self, hpmap, env):
         hpmap_ = deepcopy(hpmap)
-        # Add the env and demos or dataset
+        # Add the env and / or dataset
         hpmap_.update({'env_id': env})
-        if self.need_demos:
-            hpmap_.update({'expert_path': self.demos[env]})
         if self.need_datasets:
             hpmap_.update({'dataset_path': self.datasets[env]})
-        return hpmap_
-
-    def copy_and_add_num_demos(self, hpmap, num_demos):
-        assert self.need_demos
-        hpmap_ = deepcopy(hpmap)
-        # Add the num of demos
-        hpmap_.update({'num_demos': num_demos})
         return hpmap_
 
     def get_hps(self):
@@ -335,8 +309,6 @@ class Spawner(object):
 
                 # Offline RL
                 'offline': self.config['offline'],
-                'use_expert_demos': self.config['use_expert_demos'],
-                'sub_rate': self.config['sub_rate'],
 
                 'state_dependent_std': self.config.get('state_dependent_std', False),
                 'bcq_phi': self.config.get('bcq_phi', 0.05),
@@ -366,7 +338,7 @@ class Spawner(object):
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
                 'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
                 'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
-                'ptso_u_pi_sample_or_logp': self.config.get('ptso_u_pi_sample_or_logp', False),
+                'ptso_qprop_aggressive_eta': self.config.get('ptso_qprop_aggressive_eta', True),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
@@ -450,8 +422,6 @@ class Spawner(object):
 
                 # Offline RL
                 'offline': self.config['offline'],
-                'use_expert_demos': self.config['use_expert_demos'],
-                'sub_rate': self.config['sub_rate'],
 
                 'state_dependent_std': self.config.get('state_dependent_std', False),
                 'bcq_phi': self.config.get('bcq_phi', 0.05),
@@ -481,7 +451,7 @@ class Spawner(object):
                 'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
                 'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
                 'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
-                'ptso_u_pi_sample_or_logp': self.config.get('ptso_u_pi_sample_or_logp', False),
+                'ptso_qprop_aggressive_eta': self.config.get('ptso_qprop_aggressive_eta', True),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
@@ -499,19 +469,13 @@ class Spawner(object):
         hpmaps = [self.copy_and_add_env(hpmap, env)
                   for env in self.envs]
 
-        if self.need_demos:
-            # Duplicate for each number of demos
-            hpmaps = [self.copy_and_add_num_demos(hpmap_, num_demos)
-                      for hpmap_ in hpmaps
-                      for num_demos in self.num_demos]
-
         # Duplicate for each seed
         hpmaps = [self.copy_and_add_seed(hpmap_, seed)
                   for hpmap_ in hpmaps
                   for seed in range(self.args.num_seeds)]
 
         # Verify that the correct number of configs have been created
-        assert len(hpmaps) == self.args.num_seeds * len(self.envs) * len(self.num_demos)
+        assert len(hpmaps) == self.args.num_seeds * len(self.envs)
 
         return hpmaps
 
@@ -643,8 +607,6 @@ def run(args):
         session_name = f"{spawner.type}-{str(args.num_seeds).zfill(2)}seeds-{dir_}"
         yaml_content = {'session_name': session_name,
                         'windows': []}
-        if spawner.need_demos:
-            yaml_content.update({'environment': {'DEMO_DIR': os.environ['DEMO_DIR']}})
         if spawner.need_datasets:
             yaml_content.update({'environment': {'D4RL_DIR': os.environ['D4RL_DIR']}})
         for i, name in enumerate(names):
@@ -679,7 +641,6 @@ if __name__ == "__main__":
     boolean_flag(parser, 'deploy_now', default=True, help="deploy immediately?")
     boolean_flag(parser, 'sweep', default=False, help="hp search?")
     boolean_flag(parser, 'wandb_upgrade', default=True, help="upgrade wandb?")
-    parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
     args = parser.parse_args()
 
     # Create (and optionally deploy) the jobs

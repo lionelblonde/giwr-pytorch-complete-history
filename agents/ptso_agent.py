@@ -22,6 +22,7 @@ ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 CQL_TEMP = 1.0
 EPS_CE = 1e-6
 U_ESTIM_SAMPLES = 4
+CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
 
@@ -322,7 +323,7 @@ class PTSOAgent(object):
                     u_mean = u_value.mean(dim=0)  # scalar
                     index = q_value.argmax(0)
                 else:  # which == 'cwpq'
-                    weight = torch.exp(q_value / CRR_TEMP).clamp(min=0.01, max=1000.)
+                    weight = torch.exp(q_value / CWPQ_TEMP).clamp(min=0.01, max=1_000_000_000.)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -352,16 +353,17 @@ class PTSOAgent(object):
         _logp = actr.logp(_ob, _ac)
         return _ac, _logp.view(ob.shape[0], inflate, 1)
 
-    def q_factory(self, crit, ob, ac):
+    def q_factory(self, crit, ob, ac, mc=False):
         ob_dim = ob.shape[0]
         ac_dim = ac.shape[0]
         num_repeat = int(ac_dim / ob_dim)
         _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
         q_value = crit.QZ(_ob, ac)
-        if self.hps.use_c51:
-            q_value = q_value.matmul(self.c51_supp).unsqueeze(-1)
-        elif self.hps.use_qr:
-            q_value = q_value.mean(dim=1, keepdim=True)
+        if not mc:
+            if self.hps.use_c51:
+                q_value = q_value.matmul(self.c51_supp).unsqueeze(-1)
+            elif self.hps.use_qr:
+                q_value = q_value.mean(dim=1, keepdim=True)
         return q_value.view(ob.shape[0], num_repeat, 1)
 
     def u_factory(self, crit, ob, ac):
@@ -658,7 +660,8 @@ class PTSOAgent(object):
                 self.log_alpha_pri_opt.step()
                 metrics['alpha_pri_loss'].append(alpha_pri_loss)
 
-            logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
+        logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
+        metrics['alpha_pri'].append(self.alpha_pri)
 
         # Piece #3: Add the new losses to the vanilla ones, i.e. the traditional TD errors to minimize
         crit_loss += min_crit_loss
@@ -875,7 +878,7 @@ class PTSOAgent(object):
             # Assemble base loss
             if self.hps.base_pi_loss in ['sac', 'cql']:
                 actr_loss = (self.alpha_ent * log_prob) - q_from_actr
-            elif self.hps.base_pi_loss in ['crr_exp', 'crr_binary', 'crr_binary_max']:
+            elif self.hps.base_pi_loss in ['crr_exp', 'crr_binary', 'crr_binary_max',]:
                 crr_q = self.crit.QZ(state, action)
                 if self.hps.use_c51:
                     crr_q = crr_q.matmul(self.c51_supp).unsqueeze(-1)
@@ -889,9 +892,49 @@ class PTSOAgent(object):
                 crr_adv = crr_q - emp_adv_from_actr
                 if 'binary' in self.hps.base_pi_loss:
                     crr_adv = 1. * crr_adv.gt(0.)  # trick to easily cast to float
-                else:  # only other case: exp
+                elif self.hps.base_pi_loss == 'crr_exp':
                     crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
-                actr_loss = -self.actr.logp(state, action) * crr_adv.detach()  # detach just in case
+                actr_loss = -self.actr.logp(state, action) * crr_adv.detach()
+            elif self.hps.base_pi_loss == 'qprop_exp':
+                qprop_q = self.mc_crit.QZ(state, action)
+                emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
+                qprop_adv = qprop_q - emp_adv_from_actr
+                # Compute the gradients involved in the control variate
+                _grads = autograd.grad(
+                    outputs=q_from_actr,
+                    inputs=[action_from_actr],
+                    only_inputs=True,
+                    grad_outputs=[torch.ones_like(q_from_actr)],
+                    retain_graph=True,
+                    create_graph=True,
+                    allow_unused=False,
+                )
+                grads = list(_grads)[0]
+                # Compute the expected action from the policy, re-using the ones previously predicted
+                expected_action = emp_adv_ac.view(-1, ADV_ESTIM_SAMPLES, self.ac_dim).mean(dim=1)
+                # Assemble the control variate
+                control_variate = (grads * (action - expected_action)).sum(dim=1, keepdim=True)
+                # Compute covariance between advantage estimate (MC in Q-prop) and control variate
+                covariance = qprop_adv * control_variate
+                # Compute eta
+                if self.hps.ptso_qprop_aggressive_eta:
+                    eta = 1. * torch.sign(covariance).detach()
+                else:
+                    eta = 1. * covariance.gt(0.).detach()
+                # Augment the log-likelihood weight with the weighted control variate
+                qprop_adv -= eta * control_variate
+                # Assemble the loss
+                actr_loss = -self.actr.logp(state, action) * qprop_adv.detach().exp().clamp(max=20.)
+                # Note, a major difference with the original qprop update is the use of the exponential
+                # which does not align with their derivations but is still intuitively consistent
+                actr_loss -= eta * q_from_actr
+            elif self.hps.base_pi_loss == 'awr_exp':
+                awr_q = self.mc_crit.QZ(state, action)
+                emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
+                awr_adv = awr_q - emp_adv_from_actr.exp().clamp(max=20.)
+                actr_loss = -self.actr.logp(state, action) * awr_adv.detach()  # detach just in case
             else:
                 raise NotImplementedError("invalid base loss for policy improvement.")
 
@@ -902,18 +945,9 @@ class PTSOAgent(object):
                 u_u_ac, _ = self.ac_factory(self.actr, state, U_ESTIM_SAMPLES)
                 u_u_from_actr = self.u_factory(self.crit, state, u_u_ac).detach()
 
-                if self.hps.ptso_u_pi_sample_or_logp:
-                    if self.hps.ptso_use_unexpected_uncertainty:
-                        actr_loss += (self.hps.ptso_u_scale_p_i *
-                                      (u_from_actr - u_u_from_actr.mean(dim=1)).gt(0.).detach() *
-                                      torch.exp(u_from_actr / CRR_TEMP).clamp(max=20.))
-                    else:
-                        actr_loss += (self.hps.ptso_u_scale_p_i *
-                                      u_from_actr)
-                else:
-                    actr_loss += (self.hps.ptso_u_scale_p_i *
-                                  self.actr.logp(state, action_from_actr.detach()) *
-                                  (u_from_actr - u_u_from_actr.max(dim=1).values).gt(0.).detach())
+                actr_loss += (self.hps.ptso_u_scale_p_i *
+                              self.actr.logp(state, action_from_actr.detach()) *
+                              (u_from_actr - u_u_from_actr.max(dim=1).values).gt(0.).detach())
 
             actr_loss = actr_loss.mean()
         else:

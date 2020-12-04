@@ -68,8 +68,6 @@ num_tau: 200
 
 # Offline RL
 offline: true
-use_expert_demos: false
-sub_rate: 20
 
 state_dependent_std: true
 warm_start: 2000
@@ -86,7 +84,7 @@ cql_state_inflate: 10
 ptso_use_targ_for_u: true
 ptso_num_mat_updates_per_iter: 50
 ptso_u_scale_p_i: 0.
-ptso_u_pi_sample_or_logp: false
+ptso_qprop_aggressive_eta: true
 ptso_use_u_inference_time: false
 ptso_use_rnd_monitoring: false
 ptso_use_unexpected_uncertainty: true
@@ -97,4 +95,4 @@ ptso_grad_pen_targ_s: 0.
 ptso_grad_pen_targ_a: 0.
 
 base_pe_loss: 'cql_2'
-base_pi_loss: 'cql'
+base_pi_loss: 'qprop'

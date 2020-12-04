@@ -69,5 +69,3 @@ num_tau: 200
 
 # Offline RL
 offline: false
-use_expert_demos: false
-sub_rate: 20

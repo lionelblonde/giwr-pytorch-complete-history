@@ -67,8 +67,6 @@ num_tau: 200
 
 # Offline RL
 offline: false
-use_expert_demos: false
-sub_rate: 20
 
 state_dependent_std: false
 use_adaptive_alpha: true

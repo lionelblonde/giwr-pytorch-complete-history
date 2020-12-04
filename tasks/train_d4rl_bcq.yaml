@@ -66,8 +66,6 @@ num_tau: 200
 
 # Offline RL
 offline: true
-use_expert_demos: false
-sub_rate: 20
 
 bcq_phi: 0.05
 behavior_lr: 3.0e-4

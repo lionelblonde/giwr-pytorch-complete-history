@@ -96,9 +96,6 @@ def argparser(description="Offline RL Experiment"):
 
     # Offline RL
     boolean_flag(parser, 'offline', default=False)
-    boolean_flag(parser, 'use_expert_demos', default=False)
-    parser.add_argument('--sub_rate', help='sub-sampling rate', type=int, default=20)
-    parser.add_argument('--expert_path', help='demos location', type=str, default=None)
     parser.add_argument('--dataset_path', type=str, default=None)
 
     boolean_flag(parser, 'state_dependent_std', default=False)
@@ -130,7 +127,7 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'ptso_use_targ_for_u', default=False)
     parser.add_argument('--ptso_num_mat_updates_per_iter', type=int, default=100)
     parser.add_argument('--ptso_u_scale_p_i', type=float, default=0.)
-    boolean_flag(parser, 'ptso_u_pi_sample_or_logp', default=False)
+    boolean_flag(parser, 'ptso_qprop_aggressive_eta', default=True)
     boolean_flag(parser, 'ptso_use_u_inference_time', default=False)
     boolean_flag(parser, 'ptso_use_rnd_monitoring', default=False)
     boolean_flag(parser, 'ptso_use_unexpected_uncertainty', default=True)
