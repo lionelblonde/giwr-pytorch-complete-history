@@ -172,7 +172,7 @@ class Spawner(object):
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri', 'ptso_use_targ_for_u',
                           'ptso_qprop_aggressive_eta', 'ptso_use_u_inference_time',
-                          'ptso_use_rnd_monitoring', 'ptso_use_unexpected_uncertainty',
+                          'ptso_use_rnd_monitoring', 'ptso_use_sarsa',
                           'ptso_use_or_monitor_grad_pen']
 
         if self.args.deployment == 'slurm':
@@ -341,7 +341,7 @@ class Spawner(object):
                 'ptso_qprop_aggressive_eta': self.config.get('ptso_qprop_aggressive_eta', True),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
-                'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
+                'ptso_use_sarsa': self.config.get('ptso_use_sarsa', False),
                 'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
                 'ptso_grad_pen_scale_s': self.config.get('ptso_grad_pen_scale_s', 0.),
                 'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),
@@ -454,7 +454,7 @@ class Spawner(object):
                 'ptso_qprop_aggressive_eta': self.config.get('ptso_qprop_aggressive_eta', True),
                 'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
-                'ptso_use_unexpected_uncertainty': self.config.get('ptso_use_unexpected_uncertainty', True),
+                'ptso_use_sarsa': self.config.get('ptso_use_sarsa', False),
                 'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
                 'ptso_grad_pen_scale_s': self.config.get('ptso_grad_pen_scale_s', 0.),
                 'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),

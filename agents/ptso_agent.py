@@ -148,6 +148,7 @@ class PTSOAgent(object):
             'obs0': (self.ob_dim,),
             'obs1': (self.ob_dim,),
             'acs': (self.ac_dim,),
+            'acs1': (self.ac_dim,),  # SARSA
             'rews': (1,),
             'dones1': (1,),
             'rets': (1,),
@@ -404,8 +405,13 @@ class PTSOAgent(object):
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
 
-        next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
-        # Note, here, always stochastic selection of the target action
+        if self.hps.ptso_use_sarsa:
+            logger.info("using SARSA")
+            next_action = torch.Tensor(batch['acs1']).to(self.device)
+        else:
+            logger.info("NOT using SARSA")
+            next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
+            # Note, here, always stochastic selection of the target action
 
         if self.hps.use_c51:
 
@@ -758,7 +764,7 @@ class PTSOAgent(object):
                 _next_action = float(self.max_ac) * self.actr.sample(_next_state, sg=True)
             else:
                 _next_state = next_state
-                _next_action = next_action
+                _next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)  # re-compute just in case
             u_prime = crit_in_ube_targ.wrap_with_u_head(crit_in_ube_targ.phi(_next_state, _next_action))
             targ_u = (v_q + ((self.hps.gamma ** 2) * (1. - done) * u_prime)).clamp(min=0.)
             # Note, we clamp for the target to be non-negative, to urge the prediction to always be non-negative

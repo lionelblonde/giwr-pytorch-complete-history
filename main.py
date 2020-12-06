@@ -84,6 +84,7 @@ def train(args):
         _obs0 = []
         _acs = []
         _obs1 = []
+        _acs1 = []
         _rews = []
         _dones1 = []
         ep_step = 0
@@ -91,6 +92,7 @@ def train(args):
             ob = to_load_in_memory['obs0'][i]
             ac = to_load_in_memory['acs'][i]
             next_ob = to_load_in_memory['obs0'][i+1]
+            next_ac = to_load_in_memory['acs'][i+1]
             rew = to_load_in_memory['rews'][i]
             done = bool(to_load_in_memory['dones1'][i])
             # Treat termination cases appropriately
@@ -105,6 +107,7 @@ def train(args):
             _obs0.append(ob)
             _acs.append(ac)
             _obs1.append(next_ob)
+            _acs1.append(next_ac)
             _rews.append(rew)
             _dones1.append(done)
             ep_step += 1
@@ -112,6 +115,7 @@ def train(args):
         to_load_in_memory['obs0'] = _obs0
         to_load_in_memory['acs'] = _acs
         to_load_in_memory['obs1'] = _obs1
+        to_load_in_memory['acs1'] = _acs1
         to_load_in_memory['rews'] = _rews
         to_load_in_memory['dones1'] = _dones1
         # Wrap each value into a numpy array
