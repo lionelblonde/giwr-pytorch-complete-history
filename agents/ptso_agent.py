@@ -413,9 +413,17 @@ class PTSOAgent(object):
             next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
             # Note, here, always stochastic selection of the target action
 
-        if self.hps.use_c51:
+        # Checking the validity of the policy evaluation technique
+        assert self.hps.base_pe_loss in ['pure_td', 'cql_1', 'cql_2', 'riedmiller'], "invalid PE technique."
+        if self.hps.base_pe_loss == 'riedmiller':
+            # Add the 'clamped to 0 target patterns' technique from Riedmiller2005
+            # by forcing the use of SARSA and cql_1 as PE techique, whose combination is equivalent to NFQ's
+            self.hps.use_sarsa = True
+            self.hps.base_pe_loss = 'cql_1'
+            logger.info(f"Riedmiller PE, overriding    'use_sarsa' -> {self.hps.use_sarsa}")
+            logger.info(f"Riedmiller PE, overriding 'base_pe_loss' -> {self.hps.base_pe_loss}")
 
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> C51.
+        if self.hps.use_c51:
 
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
@@ -470,8 +478,6 @@ class PTSOAgent(object):
 
         elif self.hps.use_qr:
 
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> QR.
-
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
 
@@ -515,8 +521,6 @@ class PTSOAgent(object):
             crit_loss = crit_loss.mean()
 
         else:
-
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA.
 
             # Compute QZ estimate
             q = self.denorm_rets(self.crit.QZ(state, action))
@@ -596,8 +600,6 @@ class PTSOAgent(object):
         min_crit_loss = 0.
         if self.hps.clipped_double:
             min_twin_loss = 0.
-
-        assert self.hps.base_pe_loss in ['pure_td', 'cql_1', 'cql_2'], "invalid base loss for policy evaluation."
 
         if self.hps.base_pe_loss in ['cql_1', 'cql_2']:
             # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
