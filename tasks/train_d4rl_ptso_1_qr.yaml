@@ -95,4 +95,4 @@ ptso_grad_pen_targ_s: 0.
 ptso_grad_pen_targ_a: 0.
 
 base_pe_loss: 'cql_2'
-base_pi_loss: 'qprop_exp'
+base_pi_loss: 'crr_exp'

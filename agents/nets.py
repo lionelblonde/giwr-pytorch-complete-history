@@ -12,7 +12,7 @@ BCQ_Z_CLAMPS = [-0.5, 0.5]
 BCQ_LOG_STD_CLAMPS = [-4., 15.]
 SAC_MEAN_CLAMPS = [-9., 9.]
 SAC_LOG_STD_CLAMPS = [-5., 2.]
-GAUSS_MIXTURE_COMPS = 5  # like in ERR
+GAUSS_MIXTURE_COMPS = 5  # like in CRR
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.

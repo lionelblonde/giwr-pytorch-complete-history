@@ -113,6 +113,7 @@ class ReplayBuffer(object):
             la_batch['obs0'].append(la_transitions['obs0'][0])
             la_batch['obs1'].append(la_transitions['obs1'][td_len - 1])
             la_batch['acs'].append(la_transitions['acs'][0])
+            la_batch['acs1'].append(la_transitions['acs1'][td_len - 1])
             la_batch['rews'].append(la_discounted_sum_n_rews)
             la_batch['dones1'].append(la_is_trimmed)
             la_batch['td_len'].append(td_len)
