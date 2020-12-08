@@ -459,7 +459,8 @@ class CQLAgent(object):
             # "we want to cover the maximum amount of ground, so we consider all the Q-values we can afford."
             # Note, `dim` is set to 1 not -1, ensure the size is not 1
 
-            # Importance-sampled version
+            # Note, some importance-sampling sprinkled in there
+
             weird_stuff = np.log(0.5 ** cql_rand_ac.shape[-1])
             cql_cat_q = torch.cat([
                 cql_rand_q - weird_stuff,

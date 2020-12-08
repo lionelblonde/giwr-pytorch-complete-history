@@ -12,6 +12,7 @@ from helpers.distributed_util import RunMoms
 
 
 STANDARDIZED_OB_CLAMPS = [-5., 5.]
+HIDDEN_SIZE = 256
 
 
 class PredNet(nn.Module):
@@ -21,30 +22,31 @@ class PredNet(nn.Module):
         self.hps = hps
         self.leak = 0.1
         ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
         # Define observation whitening
         self.rms_obs = rms_obs
         # Assemble the layers
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 100)),
+                ('fc', nn.Linear(ob_dim + ac_dim, HIDDEN_SIZE)),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(100, 100)),
+                ('fc', nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_3', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(100, 100)),
+                ('fc', nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
 
-    def forward(self, obs):
+    def forward(self, obs, acs):
         if self.rms_obs is not None:
             obs = self.rms_obs.standardize(obs).clamp(*STANDARDIZED_OB_CLAMPS)
-        x = self.fc_stack(obs)
+        x = self.fc_stack(torch.cat([obs, acs], dim=-1))
         return x
 
 
@@ -53,6 +55,7 @@ class TargNet(PredNet):
     def __init__(self, env, hps, rms_obs):
         super(TargNet, self).__init__(env, hps, rms_obs)
         ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
         self.hps = hps
         self.leak = 0.1
         # Define observation whitening
@@ -60,7 +63,15 @@ class TargNet(PredNet):
         # Assemble the layers
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 100)),
+                ('fc', nn.Linear(ob_dim + ac_dim, HIDDEN_SIZE)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+            ]))),
+            ('fc_block_2', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+            ]))),
+            ('fc_block_3', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
@@ -108,11 +119,12 @@ class RandomNetworkDistillation(object):
 
         # Transfer to device
         state = torch.Tensor(batch['obs0']).to(self.device)
+        action = torch.Tensor(batch['acs']).to(self.device)
 
         # Compute loss
         _loss = F.mse_loss(
-            self.pred_net(state),
-            self.targ_net(state),
+            self.pred_net(state, action),
+            self.targ_net(state, action),
             reduction='none',
         )
         loss = _loss.mean()
@@ -120,8 +132,8 @@ class RandomNetworkDistillation(object):
 
         # Update running moments for intrinsic rewards
         int_rews = F.mse_loss(
-            self.pred_net(state),
-            self.targ_net(state),
+            self.pred_net(state, action),
+            self.targ_net(state, action),
             reduction='none',
         ).mean(dim=-1, keepdim=True).detach()
         self.rms_int_rews.update(int_rews)
@@ -134,13 +146,15 @@ class RandomNetworkDistillation(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics
 
-    def get_int_rew(self, state):
+    def get_int_rew(self, state, action):
         if not isinstance(state, torch.Tensor):
             state = torch.Tensor(state)
+        if not isinstance(action, torch.Tensor):
+            action = torch.Tensor(action)
         # Compute intrinsic reward
         int_rew = F.mse_loss(
-            self.pred_net(state),
-            self.targ_net(state),
+            self.pred_net(state, action),
+            self.targ_net(state, action),
             reduction='none',
         ).mean(dim=-1, keepdim=True).detach()
         # Normalize intrinsic reward

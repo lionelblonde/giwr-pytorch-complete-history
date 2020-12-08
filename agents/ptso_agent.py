@@ -25,6 +25,7 @@ U_ESTIM_SAMPLES = 4
 CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
+RND_INNER_SCALE = 100.0
 
 
 class PTSOAgent(object):
@@ -189,7 +190,7 @@ class PTSOAgent(object):
             total_num_steps=self.hps.num_steps,
         )
 
-        if self.hps.ptso_use_rnd_monitoring:
+        if self.hps.ptso_use_rnd_monitoring or self.hps.base_pe_loss in ['htg_1', 'htg_2']:
             # Create RND networks
             self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
 
@@ -354,18 +355,25 @@ class PTSOAgent(object):
         _logp = actr.logp(_ob, _ac)
         return _ac, _logp.view(ob.shape[0], inflate, 1)
 
-    def q_factory(self, crit, ob, ac, mc=False):
+    def q_factory(self, crit, ob, ac, mc=False, compute_rnd=False):
         ob_dim = ob.shape[0]
         ac_dim = ac.shape[0]
         num_repeat = int(ac_dim / ob_dim)
         _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
         q_value = crit.QZ(_ob, ac)
+        if compute_rnd:
+            _rnd_score = self.rnd.get_int_rew(_ob, ac).view(ob.shape[0], num_repeat, 1)
+            rnd_score = 1.0 - torch.exp(-_rnd_score * RND_INNER_SCALE)
         if not mc:
             if self.hps.use_c51:
                 q_value = q_value.matmul(self.c51_supp).unsqueeze(-1)
             elif self.hps.use_qr:
                 q_value = q_value.mean(dim=1, keepdim=True)
-        return q_value.view(ob.shape[0], num_repeat, 1)
+        q_value = q_value.view(ob.shape[0], num_repeat, 1)
+        if compute_rnd:
+            return q_value, rnd_score
+        else:
+            return q_value
 
     def u_factory(self, crit, ob, ac):
         ob_dim = ob.shape[0]
@@ -383,11 +391,6 @@ class PTSOAgent(object):
         # Container for all the metrics
         metrics = defaultdict(list)
 
-        if self.hps.ptso_use_rnd_monitoring:
-            # Update the RND network
-            self.rnd.update(batch)
-            logger.info("just updated the rnd estimate")
-
         # Transfer to device
         state = torch.Tensor(batch['obs0']).to(self.device)
         action = torch.Tensor(batch['acs']).to(self.device)
@@ -402,26 +405,26 @@ class PTSOAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
+        if self.hps.ptso_use_rnd_monitoring or self.hps.base_pe_loss in ['htg_1', 'htg_2']:
+            # Update the RND network
+            self.rnd.update(batch)
+            logger.info("just updated the rnd estimate")
+            # Monitor associated rnd estimate
+            metrics['rnd_score'].append(1.0 - torch.exp(-self.rnd.get_int_rew(state, action)))
+
+        # Checking the validity of the policy evaluation technique
+        assert self.hps.base_pe_loss in ['pure_td', 'cql_1', 'cql_2', 'htg_1', 'htg_2'], "invalid PE technique."
+
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
 
-        if self.hps.ptso_use_sarsa:
+        if self.hps.ptso_use_sarsa or self.hps.base_pe_loss in ['htg_1', 'htg_2']:
             logger.info("using SARSA")
             next_action = torch.Tensor(batch['acs1']).to(self.device)
         else:
             logger.info("NOT using SARSA")
             next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
             # Note, here, always stochastic selection of the target action
-
-        # Checking the validity of the policy evaluation technique
-        assert self.hps.base_pe_loss in ['pure_td', 'cql_1', 'cql_2', 'riedmiller'], "invalid PE technique."
-        if self.hps.base_pe_loss == 'riedmiller':
-            # Add the 'clamped to 0 target patterns' technique from Riedmiller2005
-            # by forcing the use of SARSA and cql_1 as PE techique, whose combination is equivalent to NFQ's
-            self.hps.use_sarsa = True
-            self.hps.base_pe_loss = 'cql_1'
-            logger.info(f"Riedmiller PE, overriding    'use_sarsa' -> {self.hps.use_sarsa}")
-            logger.info(f"Riedmiller PE, overriding 'base_pe_loss' -> {self.hps.base_pe_loss}")
 
         if self.hps.use_c51:
 
@@ -601,7 +604,7 @@ class PTSOAgent(object):
         if self.hps.clipped_double:
             min_twin_loss = 0.
 
-        if self.hps.base_pe_loss in ['cql_1', 'cql_2']:
+        if self.hps.base_pe_loss in ['cql_1', 'cql_2', 'htg_1', 'htg_2']:
             # Piece #1: minimize the Q-function everywhere (consequently, the erroneously big Q-values
             # will be the first to be shrinked)
 
@@ -613,9 +616,14 @@ class PTSOAgent(object):
                 self.hps.batch_size * self.hps.cql_state_inflate, self.ac_dim
             ).uniform_(-self.max_ac, self.max_ac).to(self.device)
             # Q-values
-            cql_q = self.q_factory(self.crit, state, cql_ac)
-            cql_next_q = self.q_factory(self.crit, state, cql_next_ac)
-            cql_rand_q = self.q_factory(self.crit, state, cql_rand_ac)
+            if self.hps.base_pe_loss in ['htg_1', 'htg_2']:
+                cql_q, cql_ac_rnd = self.q_factory(self.crit, state, cql_ac, compute_rnd=True)
+                cql_next_q, cql_next_ac_rnd = self.q_factory(self.crit, state, cql_next_ac, compute_rnd=True)
+                cql_rand_q, cql_rand_ac_rnd = self.q_factory(self.crit, state, cql_rand_ac, compute_rnd=True)
+            else:
+                cql_q, cql_ac_rnd = self.q_factory(self.crit, state, cql_ac), 1.0
+                cql_next_q, cql_next_ac_rnd = self.q_factory(self.crit, state, cql_next_ac), 1.0
+                cql_rand_q, cql_rand_ac_rnd = self.q_factory(self.crit, state, cql_rand_ac), 1.0
             if self.hps.clipped_double:
                 cql_twin_q = self.q_factory(self.twin, state, cql_ac)
                 cql_next_twin_q = self.q_factory(self.twin, state, cql_next_ac)
@@ -626,18 +634,19 @@ class PTSOAgent(object):
             # "we want to cover the maximum amount of ground, so we consider all the Q-values we can afford."
             # Note, `dim` is set to 1 not -1, ensure the size is not 1
 
-            # Importance-sampled version
+            # Note, some importance-sampling sprinkled in there
+
             weird_stuff = np.log(0.5 ** cql_rand_ac.shape[-1])
             cql_cat_q = torch.cat([
-                cql_rand_q - weird_stuff,
-                cql_next_q - cql_next_logp.detach(),
-                cql_q - cql_logp.detach(),
+                (cql_rand_q - weird_stuff) * cql_rand_ac_rnd,
+                (cql_next_q - cql_next_logp.detach()) * cql_next_ac_rnd,
+                (cql_q - cql_logp.detach()) * cql_ac_rnd,
             ], dim=1)
             if self.hps.clipped_double:
                 cql_cat_twin_q = torch.cat([
-                    cql_rand_twin_q - weird_stuff,
-                    cql_next_twin_q - cql_next_logp.detach(),
-                    cql_twin_q - cql_logp.detach(),
+                    (cql_rand_twin_q - weird_stuff) * cql_rand_ac_rnd,
+                    (cql_next_twin_q - cql_next_logp.detach()) * cql_next_ac_rnd,
+                    (cql_twin_q - cql_logp.detach()) * cql_ac_rnd,
                 ], dim=1)
 
             min_crit_loss += (torch.logsumexp(cql_cat_q / CQL_TEMP, dim=1).mean() *
@@ -646,13 +655,13 @@ class PTSOAgent(object):
                 min_twin_loss += (torch.logsumexp(cql_cat_twin_q / CQL_TEMP, dim=1).mean() *
                                   self.hps.cql_min_q_weight * CQL_TEMP)
 
-        if self.hps.base_pe_loss == 'cql_2':
+        if self.hps.base_pe_loss in ['cql_2', 'htg_2']:
             # Piece #2: maximize the Q-function on points in the offline dataset
             min_crit_loss -= (q.mean() * self.hps.cql_min_q_weight)
             if self.hps.clipped_double:
                 min_twin_loss -= (twin_q.mean() * self.hps.cql_min_q_weight)
 
-        if self.hps.base_pe_loss in ['cql_1', 'cql_2']:
+        if self.hps.base_pe_loss in ['cql_1', 'cql_2', 'htg_1', 'htg_2']:
             # Introduce the (learnable) coefficient alpha prime to scale the previous loss(es)
             min_crit_loss = self.alpha_pri * (min_crit_loss - self.hps.cql_targ_lower_bound)
             if self.hps.clipped_double:
@@ -779,10 +788,6 @@ class PTSOAgent(object):
         self.u_opt.zero_grad()
         u_loss.backward(retain_graph=True)
         self.u_opt.step()
-
-        if self.hps.ptso_use_rnd_monitoring:
-            # Monitor associated rnd estimate
-            metrics['rnd_score'].append(torch.exp(self.rnd.get_int_rew(state)) - 1.)
 
         # Monitoring uncertainty values with features evaluated at other actions
         if iters_so_far % self.hps.eval_frequency == 0:
