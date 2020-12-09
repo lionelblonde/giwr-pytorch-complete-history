@@ -160,9 +160,6 @@ class Critic(nn.Module):
     def wrap_with_u_head(self, x):
         return self.u_head(self.u_fc_stack(x))
 
-    def wrap_with_q_head(self, x):
-        return self.head(x)
-
     def forward(self, ob, ac):
         if self.rms_obs is not None:
             ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
@@ -602,3 +599,42 @@ class MixtureTanhGaussActor(nn.Module):
             ac_mean = ac_mean.clamp(*SAC_MEAN_CLAMPS)
             ac_std = self.ac_logstd_head.expand_as(ac_mean).clamp(*SAC_LOG_STD_CLAMPS).exp()
         return ac_log_mixture_weights, ac_mean, ac_std
+
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Reward averager.
+
+class RewardAverager(nn.Module):
+
+    def __init__(self, env, hps, rms_obs, hidden_dims):
+        super(RewardAverager, self).__init__()
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
+        self.hps = hps
+        # Define observation whitening
+        self.rms_obs = rms_obs
+        # Assemble the last layers and output heads
+        self.fc_stack = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim + ac_dim + ob_dim, hidden_dims[0])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
+                ('nl', nn.ReLU()),
+            ]))),
+            ('fc_block_2', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(hidden_dims[0], hidden_dims[1])),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        self.head = nn.Linear(hidden_dims[1], 1)
+        # Perform initialization
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.head.apply(init(weight_scale=0.01))
+
+    def forward(self, ob, ac, next_ob):
+        if self.rms_obs is not None:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
+            next_ob = self.rms_obs.standardize(next_ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        x = torch.cat([ob, ac, next_ob], dim=-1)
+        x = self.fc_stack(x)
+        x = self.head(x)
+        return x

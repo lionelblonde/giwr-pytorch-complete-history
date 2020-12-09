@@ -210,14 +210,11 @@ class CQLAgent(object):
         # Update the observation normalizer
         self.rms_obs.update(transition['obs0'])
 
-    def patcher(self):
-        raise NotImplementedError  # no need
-
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
 
-        def _patcher(x, y, z):
-            return self.patcher(x, y, z).detach().cpu().numpy()  # redundant detach
+        # def _patcher(x, y, z):
+        #     return .detach().cpu().numpy()  # redundant detach
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:

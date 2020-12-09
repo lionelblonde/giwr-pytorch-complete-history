@@ -14,7 +14,7 @@ from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers.math_util import huber_quant_reg_loss
 from helpers.math_util import LRScheduler
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import perception_stack_parser, TanhGaussActor, MixtureTanhGaussActor, Critic
+from agents.nets import perception_stack_parser, TanhGaussActor, MixtureTanhGaussActor, Critic, RewardAverager
 from agents.rnd import RandomNetworkDistillation
 
 
@@ -194,6 +194,10 @@ class PTSOAgent(object):
             # Create RND networks
             self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
 
+        if self.hps.ptso_use_reward_averager:
+            self.reward_averager = RewardAverager(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
+            self.ra_opt = torch.optim.Adam(self.reward_averager.parameters(), lr=self.hps.ptso_ra_lr)
+
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
         if self.hps.clipped_double:
@@ -265,14 +269,18 @@ class PTSOAgent(object):
         # Update the observation normalizer
         self.rms_obs.update(transition['obs0'])
 
-    def patcher(self):
-        raise NotImplementedError  # no need
-
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
+        # Create patcher if needed
+        _patcher = None
+        if self.hps.ptso_use_reward_averager:
+            logger.info("we'bout2patch")
 
-        # def _patcher(x, y, z):
-        #     return self.patcher(x, y, z).detach().cpu().numpy()  # redundant detach
+            def _patcher(x, y, z):
+                x = torch.Tensor(x).to(self.device)
+                y = torch.Tensor(y).to(self.device)
+                z = torch.Tensor(z).to(self.device)
+                return self.reward_averager(x, y, z).detach().cpu().numpy()  # redundant detach
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -280,14 +288,12 @@ class PTSOAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                # _patcher,  # no need
-                None,
+                patcher=_patcher,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                # _patcher,  # no need
-                None,
+                patcher=_patcher,
             )
         return batch
 
@@ -411,6 +417,23 @@ class PTSOAgent(object):
             logger.info("just updated the rnd estimate")
             # Monitor associated rnd estimate
             metrics['rnd_score'].append(1.0 - torch.exp(-self.rnd.get_int_rew(state, action)))
+
+        if self.hps.ptso_use_reward_averager:
+            # Update the reward averager
+            ra_loss = F.mse_loss(self.reward_averager(state, action, next_state), reward)
+            ra_grad_pen_s, ra_grad_pen_a, ra_grad_pen_ns, _, _, _ = self.grad_pen(
+                fa=self.reward_averager,
+                state=state,
+                action=action,
+                next_state=next_state,
+                targ_gn_s=self.hps.ptso_ra_grad_pen_targ_s,
+                targ_gn_a=self.hps.ptso_ra_grad_pen_targ_a,
+            )
+            ra_loss += self.hps.ptso_ra_grad_pen_scale_s * (0.5 * (ra_grad_pen_s + ra_grad_pen_ns))
+            ra_loss += self.hps.ptso_ra_grad_pen_scale_a * ra_grad_pen_a
+            self.ra_opt.zero_grad()
+            ra_loss.backward()
+            self.ra_opt.step()
 
         # Checking the validity of the policy evaluation technique
         assert self.hps.base_pe_loss in ['pure_td', 'cql_1', 'cql_2', 'htg_1', 'htg_2'], "invalid PE technique."
@@ -690,41 +713,44 @@ class PTSOAgent(object):
 
             # Note, we usually dump the metrics even if it's not an eval round (legibility),
             # but this bit it too computationally expensive
-            if self.hps.ptso_grad_pen_scale_s > 0 or self.hps.ptso_grad_pen_scale_a > 0:
+            if self.hps.ptso_phi_grad_pen_scale_s > 0 or self.hps.ptso_phi_grad_pen_scale_a > 0:
                 # Use one or two gradient penalties in training
                 crit_grad_pen_s, crit_grad_pen_a, crit_grads_norm_s, crit_grads_norm_a = self.grad_pen(
                     fa=self.crit.phi,
                     state=state,
-                    action_1=action,
-                    action_2=action_from_actr.detach(),
+                    action=action,
+                    targ_gn_s=self.hps.ptso_phi_grad_pen_targ_s,
+                    targ_gn_a=self.hps.ptso_phi_grad_pen_targ_a,
                 )
                 metrics['phi_gradnorm_s'].append(crit_grads_norm_s.mean())
                 metrics['phi_gradnorm_a'].append(crit_grads_norm_a.mean())
-                if self.hps.ptso_grad_pen_scale_s > 0:
-                    crit_loss += self.hps.ptso_grad_pen_scale_s * crit_grad_pen_s.mean()
-                if self.hps.ptso_grad_pen_scale_a > 0:
-                    crit_loss += self.hps.ptso_grad_pen_scale_a * crit_grad_pen_a.mean()
+                if self.hps.ptso_phi_grad_pen_scale_s > 0:
+                    crit_loss += self.hps.ptso_phi_grad_pen_scale_s * crit_grad_pen_s.mean()
+                if self.hps.ptso_phi_grad_pen_scale_a > 0:
+                    crit_loss += self.hps.ptso_phi_grad_pen_scale_a * crit_grad_pen_a.mean()
 
                 if self.hps.clipped_double:
-                    if self.hps.ptso_grad_pen_scale_s > 0 or self.hps.ptso_grad_pen_scale_a > 0:
+                    if self.hps.ptso_phi_grad_pen_scale_s > 0 or self.hps.ptso_phi_grad_pen_scale_a > 0:
                         twin_grad_pen_s, twin_grad_pen_a, twin_grads_norm_s, twin_grads_norm_a = self.grad_pen(
                             fa=self.twin.phi,
                             state=state,
-                            action_1=action,
-                            action_2=action_from_actr.detach(),
+                            action=action,
+                            targ_gn_s=self.hps.ptso_phi_grad_pen_targ_s,
+                            targ_gn_a=self.hps.ptso_phi_grad_pen_targ_a,
                         )
-                    if self.hps.ptso_grad_pen_scale_s > 0:
-                        twin_loss += self.hps.ptso_grad_pen_scale_s * twin_grad_pen_s.mean()
-                    if self.hps.ptso_grad_pen_scale_a > 0:
-                        twin_loss += self.hps.ptso_grad_pen_scale_a * twin_grad_pen_a.mean()
+                    if self.hps.ptso_phi_grad_pen_scale_s > 0:
+                        twin_loss += self.hps.ptso_phi_grad_pen_scale_s * twin_grad_pen_s.mean()
+                    if self.hps.ptso_phi_grad_pen_scale_a > 0:
+                        twin_loss += self.hps.ptso_phi_grad_pen_scale_a * twin_grad_pen_a.mean()
             else:
                 if iters_so_far % self.hps.eval_frequency == 0:
                     # Just monitor the gradient norms' values
                     _, _, crit_grads_norm_s, crit_grads_norm_a = self.grad_pen(
                         fa=self.crit.phi,
                         state=state,
-                        action_1=action,
-                        action_2=action_from_actr.detach(),
+                        action=action,
+                        targ_gn_s=self.hps.ptso_phi_grad_pen_targ_s,
+                        targ_gn_a=self.hps.ptso_phi_grad_pen_targ_a,
                     )
                     metrics['phi_gradnorm_s'].append(crit_grads_norm_s.mean())
                     metrics['phi_gradnorm_a'].append(crit_grads_norm_a.mean())
@@ -995,20 +1021,26 @@ class PTSOAgent(object):
 
         return metrics, lrnows
 
-    def grad_pen(self, fa, state, action_1, action_2):
+    def grad_pen(self, fa, state, action, targ_gn_s, targ_gn_a, std=10.0, next_state=None):
         """Define the gradient penalty regularizer"""
         # Create the states to apply the contraint on
-        eps_s = state.clone().detach().data.normal_(0, 10)
+        eps_s = state.clone().detach().data.normal_(0, std)
         zeta_state = state + eps_s
         zeta_state.requires_grad = True
+        if next_state is not None:
+            eps_ns = next_state.clone().detach().data.normal_(0, std)
+            zeta_next_state = next_state + eps_ns
+            zeta_next_state.requires_grad = True
         # Create the actions to apply the contraint on
-        eps_a = torch.rand(action_1.size(0), 1).to(self.device)
-        zeta_action = eps_a * action_1 + ((1. - eps_a) * action_2)
+        eps_a = action.clone().detach().data.normal_(0, std)
+        zeta_action = action + eps_a
         zeta_action.requires_grad = True
-        # Create the operation of interest
-        score = fa(zeta_state, zeta_action)
         # Define the input(s) w.r.t. to take the gradient
         inputs = [zeta_state, zeta_action]
+        if next_state is not None:
+            inputs.append(zeta_next_state)
+        # Create the operation of interest
+        score = fa(*inputs)
         # Get the gradient of this operation with respect to its inputs
         grads = autograd.grad(
             outputs=score,
@@ -1022,9 +1054,14 @@ class PTSOAgent(object):
         # Return the gradient penalties
         grads_norm_s = list(grads)[0].norm(2, dim=-1)
         grads_norm_a = list(grads)[1].norm(2, dim=-1)
-        grad_pen_s = (grads_norm_s - self.hps.ptso_grad_pen_targ_s).pow(2).mean()
-        grad_pen_a = (grads_norm_a - self.hps.ptso_grad_pen_targ_a).pow(2).mean()
-        return grad_pen_s, grad_pen_a, grads_norm_s, grads_norm_a
+        grad_pen_s = (grads_norm_s - targ_gn_s).pow(2).mean()
+        grad_pen_a = (grads_norm_a - targ_gn_a).pow(2).mean()
+        if next_state is None:
+            return grad_pen_s, grad_pen_a, grads_norm_s, grads_norm_a
+        else:
+            grads_norm_ns = list(grads)[2].norm(2, dim=-1)
+            grad_pen_ns = (grads_norm_ns - targ_gn_s).pow(2).mean()  # same target as with state
+            return grad_pen_s, grad_pen_a, grad_pen_ns, grads_norm_s, grads_norm_a, grads_norm_ns
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

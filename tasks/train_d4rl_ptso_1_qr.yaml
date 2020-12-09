@@ -89,10 +89,17 @@ ptso_use_u_inference_time: false
 ptso_use_rnd_monitoring: false
 ptso_use_sarsa: false
 ptso_use_or_monitor_grad_pen: true
-ptso_grad_pen_scale_s: 0.
-ptso_grad_pen_scale_a: 0.
-ptso_grad_pen_targ_s: 0.
-ptso_grad_pen_targ_a: 0.
+ptso_phi_grad_pen_scale_s: 0.
+ptso_phi_grad_pen_scale_a: 0.
+ptso_phi_grad_pen_targ_s: 0.
+ptso_phi_grad_pen_targ_a: 0.
+
+ptso_use_reward_averager: false
+ptso_ra_lr: 1.0e-3
+ptso_ra_grad_pen_scale_s: 0.
+ptso_ra_grad_pen_scale_a: 0.
+ptso_ra_grad_pen_targ_s: 0.
+ptso_ra_grad_pen_targ_a: 0.
 
 base_pe_loss: 'cql_2'
 base_pi_loss: 'crr_exp'

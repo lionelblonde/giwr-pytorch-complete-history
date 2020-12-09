@@ -173,23 +173,26 @@ class Spawner(object):
                           'cql_use_adaptive_alpha_pri', 'ptso_use_targ_for_u',
                           'ptso_qprop_aggressive_eta', 'ptso_use_u_inference_time',
                           'ptso_use_rnd_monitoring', 'ptso_use_sarsa',
-                          'ptso_use_or_monitor_grad_pen']
+                          'ptso_use_or_monitor_grad_pen', 'ptso_use_reward_averager']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
-            calibers = dict(short='0-06:00:00',  # partition: 'shared-EL7'
+            calibers = dict(short='0-06:00:00',
                             long='0-12:00:00',
-                            verylong='1-00:00:00',  # partition: 'mono-EL7'
+                            verylong='1-00:00:00',
                             veryverylong='2-00:00:00',
                             veryveryverylong='4-00:00:00')
-            self.duration = calibers[self.args.caliber]  # intented KeyError trigger if invalid caliber
+            self.duration = calibers[self.args.caliber]  # intended KeyError trigger if invalid caliber
             if 'verylong' in self.args.caliber:
-                self.partition = 'mono-EL7'
+                if self.config['resources']['cuda']:
+                    self.partition = 'public-gpu'
+                else:
+                    self.partition = 'public-cpu'
             else:
                 if self.config['resources']['cuda']:
-                    self.partition = 'shared-gpu-EL7'
+                    self.partition = 'shared-gpu'
                 else:
-                    self.partition = 'shared-EL7'
+                    self.partition = 'shared-cpu'
 
         # Define the set of considered environments from the considered suite
         self.envs = ENV_BUNDLES[self.config['meta']['benchmark']][self.args.env_bundle]
@@ -343,10 +346,17 @@ class Spawner(object):
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_sarsa': self.config.get('ptso_use_sarsa', False),
                 'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
-                'ptso_grad_pen_scale_s': self.config.get('ptso_grad_pen_scale_s', 0.),
-                'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),
-                'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
-                'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
+                'ptso_phi_grad_pen_scale_s': self.config.get('ptso_phi_grad_pen_scale_s', 0.),
+                'ptso_phi_grad_pen_scale_a': self.config.get('ptso_phi_grad_pen_scale_a', 0.),
+                'ptso_phi_grad_pen_targ_s': self.config.get('ptso_phi_grad_pen_targ_s', 0.),
+                'ptso_phi_grad_pen_targ_a': self.config.get('ptso_phi_grad_pen_targ_a', 0.),
+
+                'ptso_use_reward_averager': self.config.get('ptso_use_reward_averager', False),
+                'ptso_ra_lr': self.config.get('ptso_ra_lr', 1e-3),
+                'ptso_ra_grad_pen_scale_s': self.config.get('ptso_ra_grad_pen_scale_s', 0.),
+                'ptso_ra_grad_pen_scale_a': self.config.get('ptso_ra_grad_pen_scale_a', 0.),
+                'ptso_ra_grad_pen_targ_s': self.config.get('ptso_ra_grad_pen_targ_s', 0.),
+                'ptso_ra_grad_pen_targ_a': self.config.get('ptso_ra_grad_pen_targ_a', 0.),
 
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
@@ -456,10 +466,17 @@ class Spawner(object):
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
                 'ptso_use_sarsa': self.config.get('ptso_use_sarsa', False),
                 'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
-                'ptso_grad_pen_scale_s': self.config.get('ptso_grad_pen_scale_s', 0.),
-                'ptso_grad_pen_scale_a': self.config.get('ptso_grad_pen_scale_a', 0.),
-                'ptso_grad_pen_targ_s': self.config.get('ptso_grad_pen_targ_s', 0.),
-                'ptso_grad_pen_targ_a': self.config.get('ptso_grad_pen_targ_a', 0.),
+                'ptso_phi_grad_pen_scale_s': self.config.get('ptso_phi_grad_pen_scale_s', 0.),
+                'ptso_phi_grad_pen_scale_a': self.config.get('ptso_phi_grad_pen_scale_a', 0.),
+                'ptso_phi_grad_pen_targ_s': self.config.get('ptso_phi_grad_pen_targ_s', 0.),
+                'ptso_phi_grad_pen_targ_a': self.config.get('ptso_phi_grad_pen_targ_a', 0.),
+
+                'ptso_use_reward_averager': self.config.get('ptso_use_reward_averager', False),
+                'ptso_ra_lr': self.config.get('ptso_ra_lr', 1e-3),
+                'ptso_ra_grad_pen_scale_s': self.config.get('ptso_ra_grad_pen_scale_s', 0.),
+                'ptso_ra_grad_pen_scale_a': self.config.get('ptso_ra_grad_pen_scale_a', 0.),
+                'ptso_ra_grad_pen_targ_s': self.config.get('ptso_ra_grad_pen_targ_s', 0.),
+                'ptso_ra_grad_pen_targ_a': self.config.get('ptso_ra_grad_pen_targ_a', 0.),
 
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
