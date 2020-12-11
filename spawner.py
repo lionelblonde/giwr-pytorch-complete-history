@@ -155,7 +155,7 @@ class Spawner(object):
 
         # Assemble wandb project name
         self.wandb_project = (self.config['logging']['wandb_project'].upper() + '-' +
-                              self.args.deployment.upper())
+                              ('slurm' if 'slurm' in self.args.deployment else self.args.deployment).upper())
 
         # Define spawn type
         self.type = 'sweep' if self.args.sweep else 'fixed'
@@ -175,7 +175,7 @@ class Spawner(object):
                           'ptso_use_rnd_monitoring', 'ptso_use_sarsa',
                           'ptso_use_or_monitor_grad_pen', 'ptso_use_reward_averager']
 
-        if self.args.deployment == 'slurm':
+        if 'slurm' in self.args.deployment:
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
             calibers = dict(short='0-06:00:00',
                             long='0-12:00:00',
@@ -520,7 +520,7 @@ class Spawner(object):
         # Prepend python command with python binary path
         command = os.path.join(os.environ['CONDA_PREFIX'], "bin", command)
 
-        if self.args.deployment == 'slurm':
+        if 'slurm' in self.args.deployment:
             os.makedirs("./out", exist_ok=True)
             # Set sbatch config
             bash_script_str = ('#!/usr/bin/env bash\n\n')
@@ -530,12 +530,15 @@ class Spawner(object):
                                 "#SBATCH --cpus-per-task=1\n"
                                 f"#SBATCH --time={self.duration}\n"
                                 f"#SBATCH --mem={self.memory}000\n"
-                                "#SBATCH --output=./out/run_%j.out\n"
-                                '#SBATCH --constraint="V3|V4|V5|V6|V7"\n')  # single quote to escape
+                                "#SBATCH --output=./out/run_%j.out\n")
+            if self.args.deployment == 'slurm':
+                bash_script_str += '#SBATCH --constraint="V3|V4|V5|V6|V7"\n'  # single quote to escape
+
             if self.config['resources']['cuda']:
-                contraint = "COMPUTE_CAPABILITY_6_0|COMPUTE_CAPABILITY_6_1"
-                bash_script_str += ("#SBATCH --gres=gpu:1\n"
-                                    f'#SBATCH --constraint="{contraint}"\n')  # single quote to escape
+                bash_script_str += f'#SBATCH --gres=gpu:"{self.args.num_workers}"\n'  # single quote to escape
+                if self.args.deployment == 'slurm':
+                    contraint = "COMPUTE_CAPABILITY_6_0|COMPUTE_CAPABILITY_6_1"
+                    bash_script_str += f'#SBATCH --constraint="{contraint}"\n'  # single quote to escape
             bash_script_str += ('\n')
             # Load modules
             bash_script_str += ("module load GCC/8.3.0 OpenMPI/3.1.4\n")
@@ -545,7 +548,10 @@ class Spawner(object):
                 bash_script_str += ("module load CUDA\n")
             bash_script_str += ('\n')
             # Launch command
-            bash_script_str += (f"srun {command}")
+            if self.args.deployment == 'slurm':
+                bash_script_str += (f"srun {command}")
+            else:
+                bash_script_str += (f"mpirun {command}")
 
         elif self.args.deployment == 'tmux':
             # Set header
@@ -652,7 +658,8 @@ if __name__ == "__main__":
     parser.add_argument('--conda_env', type=str, default=None)
     parser.add_argument('--env_bundle', type=str, default=None)
     parser.add_argument('--num_workers', type=int, default=None)
-    parser.add_argument('--deployment', type=str, choices=['tmux', 'slurm'], default='tmux', help='deploy how?')
+    parser.add_argument('--deployment', type=str, choices=['tmux', 'slurm', 'slurm2'],
+                        default='tmux', help='deploy how?')
     parser.add_argument('--num_seeds', type=int, default=None)
     parser.add_argument('--caliber', type=str, default=None)
     boolean_flag(parser, 'deploy_now', default=True, help="deploy immediately?")
