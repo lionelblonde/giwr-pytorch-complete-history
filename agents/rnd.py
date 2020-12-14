@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from helpers import logger
+import logger
 from helpers.console_util import log_module_info
 from agents.nets import init
 from helpers.distributed_util import RunMoms

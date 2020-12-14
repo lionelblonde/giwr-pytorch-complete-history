@@ -13,7 +13,7 @@ logging:
 
 # Training
 save_frequency: 1e5
-num_steps: 5e5
+num_steps: 1e6
 training_steps_per_iter: 1
 eval_steps_per_iter: 50
 eval_frequency: 5e3
@@ -44,7 +44,7 @@ ret_norm: false
 popart: false
 
 # TD3
-clipped_double: true
+clipped_double: false
 ensemble_q_lambda: 1.
 targ_actor_smoothing: false
 td3_std: 0.2
@@ -60,8 +60,8 @@ unreal: false
 
 # Distributional RL
 use_c51: false
-use_qr: false
-c51_num_atoms: 151
+use_qr: true
+c51_num_atoms: 51
 c51_vmin: -150.
 c51_vmax: 150.
 num_tau: 200
@@ -77,7 +77,7 @@ cql_use_adaptive_alpha_ent: true
 cql_use_adaptive_alpha_pri: true
 cql_init_temp_log_alpha_ent: 0.
 cql_init_temp_log_alpha_pri: 0.
-cql_targ_lower_bound: 5.
+cql_targ_lower_bound: 1.
 cql_min_q_weight: 5.
 cql_state_inflate: 10
 
@@ -102,4 +102,4 @@ ptso_ra_grad_pen_targ_s: 0.
 ptso_ra_grad_pen_targ_a: 0.
 
 base_pe_loss: 'cql_2'
-base_pi_loss: 'cql'
+base_pi_loss: 'crr_exp'

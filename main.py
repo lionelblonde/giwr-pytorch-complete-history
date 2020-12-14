@@ -7,7 +7,7 @@ from mpi4py import MPI
 import numpy as np
 import torch
 
-from helpers import logger
+import logger
 from helpers.argparsers import argparser
 from helpers.experiment import ExperimentInitializer
 from helpers.math_util import discount
@@ -406,7 +406,7 @@ if __name__ == '__main__':
 
     # Make the paths absolute
     _args.root = os.path.dirname(os.path.abspath(__file__))
-    for k in ['checkpoints', 'logs', 'videos', 'replays', 'explorations']:
+    for k in ['checkpoints', 'logs', 'videos']:
         new_k = "{}_dir".format(k[:-1])
         vars(_args)[new_k] = os.path.join(_args.root, 'data', k)
 

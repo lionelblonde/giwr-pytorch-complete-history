@@ -137,6 +137,8 @@ def make_output_format(format, ev_dir, suffix=''):
     if format == 'stdout':
         return HumanOutputFormat(sys.stdout)
     elif format == 'log':
+        ev_dir = osp.join(osp.dirname(os.path.abspath(__file__)), 'stdouts', ev_dir.split('/')[-1])
+        os.makedirs(ev_dir, exist_ok=True)
         return HumanOutputFormat(osp.join(ev_dir, "log{}.txt".format(suffix)))
     elif format == 'json':
         return JSONOutputFormat(osp.join(ev_dir, "progress{}.json".format(suffix)))

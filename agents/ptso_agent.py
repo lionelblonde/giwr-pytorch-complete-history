@@ -8,7 +8,7 @@ import torch.nn.utils as U
 import torch.nn.functional as F
 from torch import autograd
 
-from helpers import logger
+import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers.math_util import huber_quant_reg_loss
@@ -47,6 +47,9 @@ class PTSOAgent(object):
         assert self.hps.rollout_len <= self.hps.batch_size
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
+
+        # Override with environment-specific hyper-parameter values, in line with CQL's codebase
+        self.hps.cql_targ_lower_bound = 5.0 if 'antmaze' in self.hps.env_id else 1.0
 
         # Define action clipping range
         self.max_ac = max(np.abs(np.amax(self.ac_space.high.astype('float32'))),
@@ -441,9 +444,18 @@ class PTSOAgent(object):
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
 
-        if self.hps.ptso_use_sarsa or self.hps.base_pe_loss in ['htg_1', 'htg_2']:
+        if self.hps.ptso_use_sarsa:
             logger.info("using SARSA")
-            next_action = torch.Tensor(batch['acs1']).to(self.device)
+            next_action_behave = torch.Tensor(batch['acs1']).to(self.device)
+            next_action_policy = float(self.max_ac) * self.actr.sample(next_state, sg=True)
+            with torch.no_grad():
+                _u = self.crit.wrap_with_u_head(self.crit.phi(next_state, next_action_policy))
+                # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
+                u_u_ac, _ = self.ac_factory(self.actr, next_state, U_ESTIM_SAMPLES)
+                u_u_from_actr = self.u_factory(self.crit, next_state, u_u_ac)
+                _u = 1. * (_u - u_u_from_actr.max(dim=1).values).gt(0.)
+                logger.info(f"number of 1's in the unexpected uncertainty vector: {_u.sum()}/{_u.shape[0]}")
+            next_action = (_u * next_action_behave) + ((1 - _u) * next_action_policy)
         else:
             logger.info("NOT using SARSA")
             next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)

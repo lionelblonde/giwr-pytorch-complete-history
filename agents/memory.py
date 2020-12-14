@@ -4,7 +4,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from helpers import logger
+import logger
 from helpers.math_util import discount
 from helpers.misc_util import zipsame
 from helpers.segment_tree import SumSegmentTree, MinSegmentTree

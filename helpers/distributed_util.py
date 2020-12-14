@@ -4,7 +4,7 @@ from mpi4py import MPI
 import numpy as np
 import torch
 
-from helpers import logger
+import logger
 
 COMM = MPI.COMM_WORLD
 

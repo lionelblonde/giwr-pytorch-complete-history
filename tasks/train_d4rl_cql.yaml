@@ -1,7 +1,7 @@
 meta:
   task: 'train'
   benchmark: 'd4rl'
-  algo: 'ptso'
+  algo: 'cql'
 
 resources:
   cuda: true
@@ -13,7 +13,7 @@ logging:
 
 # Training
 save_frequency: 1e5
-num_steps: 5e5
+num_steps: 1e6
 training_steps_per_iter: 1
 eval_steps_per_iter: 50
 eval_frequency: 5e3
@@ -21,7 +21,6 @@ eval_frequency: 5e3
 # Model
 perception_stack: '"256 256, 256 256"'
 layer_norm: true
-gauss_mixture: false
 
 # Optimization
 actor_lr: 1.0e-4
@@ -44,7 +43,7 @@ ret_norm: false
 popart: false
 
 # TD3
-clipped_double: false
+clipped_double: true
 ensemble_q_lambda: 1.
 targ_actor_smoothing: false
 td3_std: 0.2
@@ -60,8 +59,8 @@ unreal: false
 
 # Distributional RL
 use_c51: false
-use_qr: true
-c51_num_atoms: 51
+use_qr: false
+c51_num_atoms: 151
 c51_vmin: -150.
 c51_vmax: 150.
 num_tau: 200
@@ -70,7 +69,7 @@ num_tau: 200
 offline: true
 
 state_dependent_std: true
-warm_start: 2000
+warm_start: 40000
 crit_targ_update_freq: 1
 cql_deterministic_backup: true
 cql_use_adaptive_alpha_ent: true
@@ -81,25 +80,4 @@ cql_targ_lower_bound: 1.
 cql_min_q_weight: 5.
 cql_state_inflate: 10
 
-ptso_use_targ_for_u: true
-ptso_num_mat_updates_per_iter: 50
-ptso_u_scale_p_i: 0.
-ptso_qprop_aggressive_eta: true
-ptso_use_u_inference_time: false
-ptso_use_rnd_monitoring: false
-ptso_use_sarsa: false
-ptso_use_or_monitor_grad_pen: true
-ptso_phi_grad_pen_scale_s: 0.
-ptso_phi_grad_pen_scale_a: 0.
-ptso_phi_grad_pen_targ_s: 0.
-ptso_phi_grad_pen_targ_a: 0.
-
-ptso_use_reward_averager: true
-ptso_ra_lr: 1.0e-3
-ptso_ra_grad_pen_scale_s: 10.
-ptso_ra_grad_pen_scale_a: 10.
-ptso_ra_grad_pen_targ_s: 1.
-ptso_ra_grad_pen_targ_a: 1.
-
 base_pe_loss: 'cql_2'
-base_pi_loss: 'crr_exp'

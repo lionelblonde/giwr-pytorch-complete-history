@@ -2,7 +2,7 @@ import os
 
 import gym
 
-from helpers import logger
+import logger
 import environments
 
 os.environ["D4RL_SUPPRESS_IMPORT_ERROR"] = "1"

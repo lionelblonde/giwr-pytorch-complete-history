@@ -9,7 +9,7 @@ import signal
 import wandb
 import numpy as np
 
-from helpers import logger
+import logger
 # from helpers.distributed_util import sync_check
 from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video

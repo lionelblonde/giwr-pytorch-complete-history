@@ -6,7 +6,7 @@ import numpy as np
 import subprocess
 import yaml
 
-from helpers import logger
+import logger
 from helpers.misc_util import zipsame, boolean_flag
 from helpers.experiment import uuid as create_uuid
 
@@ -30,8 +30,7 @@ ENV_BUNDLES = {
     },
     'd4rl': {
         'debug': ['hopper-expert-v0'],
-        'debug2': ['hopper-expert-v0',
-                   'walker2d-expert-v0'],
+        'debug_maze2d': ['maze2d-umaze-v1'],
         'debug_antmaze': ['antmaze-medium-play-v0'],
         'debug_adroit': ['pen-human-v0'],
         'debug_kitchen': ['kitchen-partial-v0'],
@@ -56,6 +55,21 @@ ENV_BUNDLES = {
                       'antmaze-umaze-diverse-v0',
                       'antmaze-medium-play-v0',
                       'antmaze-medium-diverse-v0'],
+
+        'ablation': ['hopper-medium-replay-v0',
+                     'hopper-expert-v0',
+                     'walker2d-medium-replay-v0',
+                     'walker2d-expert-v0',
+                     'maze2d-umaze-v1',
+                     'maze2d-medium-v1',
+                     'pen-cloned-v0',
+                     'pen-expert-v0',
+                     'hammer-cloned-v0',
+                     'hammer-expert-v0',
+                     'antmaze-umaze-v0',
+                     'antmaze-umaze-diverse-v0',
+                     'antmaze-medium-play-v0',
+                     'kitchen-partial-v0'],
 
         'maze2d': ['maze2d-open-v0',
                    'maze2d-umaze-v1',
@@ -101,7 +115,15 @@ ENV_BUNDLES = {
         'kitchen': ['kitchen-partial-v0',
                     'kitchen-complete-v0',
                     'kitchen-mixed-v0'],
-        'suite': ['hopper-random-v0',
+        'suite': ['maze2d-open-v0',
+                  'maze2d-umaze-v1',
+                  'maze2d-medium-v1',
+                  'maze2d-large-v1',
+                  'maze2d-open-dense-v0',
+                  'maze2d-umaze-dense-v1',
+                  'maze2d-medium-dense-v1',
+                  'maze2d-large-dense-v1'
+                  'hopper-random-v0',
                   'hopper-medium-v0',
                   'hopper-expert-v0',
                   'hopper-medium-replay-v0',
@@ -609,8 +631,10 @@ def run(args):
 
     # Spawn the jobs
     for i, (name, job) in enumerate(zipsame(names, jobs)):
-        logger.info(f">>>>>>>>>>>>>>>>>>>> Job #{i} ready to submit. Config below.")
-        logger.info(job + "\n")
+        logger.info(f"job#={i},name={name} -> ready to be deployed.")
+        if args.debug:
+            logger.info("config below.")
+            logger.info(job + "\n")
         dirname = name.split('.')[1]
         full_dirname = os.path.join(spawn_dir, dirname)
         os.makedirs(full_dirname, exist_ok=True)
@@ -620,10 +644,9 @@ def run(args):
         if args.deploy_now and not args.deployment == 'tmux':
             # Spawn the job!
             stdout = subprocess.run(["sbatch", job_name]).stdout
-            logger.info(f"[STDOUT]\n{stdout}")
-            logger.info(f">>>>>>>>>>>>>>>>>>>> Job #{i} submitted.")
-    # Summarize the number of jobs spawned
-    logger.info(f">>>>>>>>>>>>>>>>>>>> {len(jobs)} jobs were spawned.")
+            if args.debug:
+                logger.info(f"[STDOUT]\n{stdout}")
+            logger.info(f"job#={i},name={name} -> deployed on slurm.")
 
     if args.deployment == 'tmux':
         dir_ = hpmaps[0]['uuid'].split('.')[0]  # arbitrarilly picked index 0
@@ -641,6 +664,7 @@ def run(args):
                       'focus': False,
                       'panes': [pane]}
             yaml_content['windows'].append(window)
+            logger.info(f"job#={i},name={name} -> will run in tmux, session={session_name},window={i}.")
         # Dump the assembled tmux config into a yaml file
         job_config = os.path.join(tmux_dir, f"{session_name}.yaml")
         with open(job_config, "w") as f:
@@ -648,7 +672,12 @@ def run(args):
         if args.deploy_now:
             # Spawn all the jobs in the tmux session!
             stdout = subprocess.run(["tmuxp", "load", "-d", job_config]).stdout
-            logger.info(f"[STDOUT]\n{stdout}")
+            if args.debug:
+                logger.info(f"[STDOUT]\n{stdout}")
+            logger.info(f"[{len(jobs)}] jobs are now running in tmux session '{session_name}'.")
+    else:
+        # Summarize the number of jobs spawned
+        logger.info(f"[{len(jobs)}] jobs were spawned.")
 
 
 if __name__ == "__main__":
@@ -665,6 +694,7 @@ if __name__ == "__main__":
     boolean_flag(parser, 'deploy_now', default=True, help="deploy immediately?")
     boolean_flag(parser, 'sweep', default=False, help="hp search?")
     boolean_flag(parser, 'wandb_upgrade', default=True, help="upgrade wandb?")
+    boolean_flag(parser, 'debug', default=False, help="toggle debug/verbose mode")
     args = parser.parse_args()
 
     # Create (and optionally deploy) the jobs

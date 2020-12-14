@@ -6,7 +6,7 @@ import torch
 import torch.nn.utils as U
 import torch.nn.functional as F
 
-from helpers import logger
+import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers.math_util import LRScheduler

@@ -6,7 +6,7 @@ import subprocess
 import numpy as np
 import yaml
 
-from helpers import logger
+import logger
 
 
 def uuid(num_syllables=2, num_parts=3):

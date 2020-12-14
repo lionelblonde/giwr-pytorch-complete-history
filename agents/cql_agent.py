@@ -6,7 +6,7 @@ import torch
 import torch.nn.utils as U
 import torch.nn.functional as F
 
-from helpers import logger
+import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers.math_util import LRScheduler
@@ -40,6 +40,9 @@ class CQLAgent(object):
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
         assert not self.hps.use_c51 and not self.hps.use_qr
+
+        # Override with environment-specific hyper-parameter values, in line with CQL's codebase
+        self.hps.cql_targ_lower_bound = 5.0 if 'antmaze' in self.hps.env_id else 1.0
 
         # Define action clipping range
         self.max_ac = max(np.abs(np.amax(self.ac_space.high.astype('float32'))),
