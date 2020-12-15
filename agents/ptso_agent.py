@@ -446,16 +446,7 @@ class PTSOAgent(object):
 
         if self.hps.ptso_use_sarsa:
             logger.info("using SARSA")
-            next_action_behave = torch.Tensor(batch['acs1']).to(self.device)
-            next_action_policy = float(self.max_ac) * self.actr.sample(next_state, sg=True)
-            with torch.no_grad():
-                _u = self.crit.wrap_with_u_head(self.crit.phi(next_state, next_action_policy))
-                # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
-                u_u_ac, _ = self.ac_factory(self.actr, next_state, U_ESTIM_SAMPLES)
-                u_u_from_actr = self.u_factory(self.crit, next_state, u_u_ac)
-                _u = 1. * (_u - u_u_from_actr.max(dim=1).values).gt(0.)
-                logger.info(f"number of 1's in the unexpected uncertainty vector: {_u.sum()}/{_u.shape[0]}")
-            next_action = (_u * next_action_behave) + ((1 - _u) * next_action_policy)
+            next_action = torch.Tensor(batch['acs1']).to(self.device)
         else:
             logger.info("NOT using SARSA")
             next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
@@ -929,7 +920,7 @@ class PTSOAgent(object):
             # Assemble base loss
             if self.hps.base_pi_loss in ['sac', 'cql']:
                 actr_loss = (self.alpha_ent * log_prob) - q_from_actr
-            elif self.hps.base_pi_loss in ['crr_exp', 'crr_binary', 'crr_binary_max',]:
+            elif self.hps.base_pi_loss in ['crr_exp', 'crr_binary', 'crr_binary_max']:
                 crr_q = self.crit.QZ(state, action)
                 if self.hps.use_c51:
                     crr_q = crr_q.matmul(self.c51_supp).unsqueeze(-1)
@@ -946,10 +937,16 @@ class PTSOAgent(object):
                 elif self.hps.base_pi_loss == 'crr_exp':
                     crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
                 actr_loss = -self.actr.logp(state, action) * crr_adv.detach()
-            elif self.hps.base_pi_loss == 'qprop_exp':
-                qprop_q = self.mc_crit.QZ(state, action)
+            elif self.hps.base_pi_loss in ['qprop_exp_mc', 'qprop_exp_td']:
+                if self.hps.base_pi_loss == 'qprop_exp_mc':
+                    qprop_q = self.mc_crit.QZ(state, action)
+                elif self.hps.base_pi_loss == 'qprop_exp_td':
+                    qprop_q = self.crit.QZ(state, action)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
-                emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
+                if self.hps.base_pi_loss == 'qprop_exp_mc':
+                    emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
+                elif self.hps.base_pi_loss == 'qprop_exp_td':
+                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac, mc=False).mean(dim=1)
                 qprop_adv = qprop_q - emp_adv_from_actr
                 # Compute the gradients involved in the control variate
                 _grads = autograd.grad(
@@ -984,8 +981,8 @@ class PTSOAgent(object):
                 awr_q = self.mc_crit.QZ(state, action)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
                 emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
-                awr_adv = awr_q - emp_adv_from_actr.exp().clamp(max=20.)
-                actr_loss = -self.actr.logp(state, action) * awr_adv.detach()  # detach just in case
+                awr_adv = awr_q - emp_adv_from_actr
+                actr_loss = -self.actr.logp(state, action) * awr_adv.detach().exp().clamp(max=20.)
             else:
                 raise NotImplementedError("invalid base loss for policy improvement.")
 
