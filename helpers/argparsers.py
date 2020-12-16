@@ -130,7 +130,6 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'ptso_qprop_aggressive_eta', default=True)
     boolean_flag(parser, 'ptso_use_u_inference_time', default=False)
     boolean_flag(parser, 'ptso_use_rnd_monitoring', default=False)
-    boolean_flag(parser, 'ptso_use_sarsa', default=False)
     boolean_flag(parser, 'ptso_use_or_monitor_grad_pen', default=False)
     parser.add_argument('--ptso_phi_grad_pen_scale_s', type=float, default=0.)
     parser.add_argument('--ptso_phi_grad_pen_scale_a', type=float, default=0.)
@@ -144,6 +143,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--ptso_ra_grad_pen_targ_s', type=float, default=0.)
     parser.add_argument('--ptso_ra_grad_pen_targ_a', type=float, default=0.)
 
+    parser.add_argument('--base_next_action', type=str, default=None)
     parser.add_argument('--base_pe_loss', type=str, default=None)
     parser.add_argument('--base_pi_loss', type=str, default=None)
 

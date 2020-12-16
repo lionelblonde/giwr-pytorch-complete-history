@@ -84,10 +84,9 @@ cql_state_inflate: 10
 ptso_use_targ_for_u: true
 ptso_num_mat_updates_per_iter: 50
 ptso_u_scale_p_i: 0.
-ptso_qprop_aggressive_eta: true
+ptso_qprop_aggressive_eta: false
 ptso_use_u_inference_time: false
 ptso_use_rnd_monitoring: false
-ptso_use_sarsa: false
 ptso_use_or_monitor_grad_pen: true
 ptso_phi_grad_pen_scale_s: 0.
 ptso_phi_grad_pen_scale_a: 0.
@@ -101,5 +100,6 @@ ptso_ra_grad_pen_scale_a: 0.
 ptso_ra_grad_pen_targ_s: 0.
 ptso_ra_grad_pen_targ_a: 0.
 
+base_next_action: 'theta'
 base_pe_loss: 'cql_2'
-base_pi_loss: 'qprop_exp_td'
+base_pi_loss: 'qqprop_td'

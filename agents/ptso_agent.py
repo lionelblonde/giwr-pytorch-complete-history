@@ -334,7 +334,10 @@ class PTSOAgent(object):
                     u_mean = u_value.mean(dim=0)  # scalar
                     index = q_value.argmax(0)
                 else:  # which == 'cwpq'
-                    weight = torch.exp(q_value / CWPQ_TEMP).clamp(min=0.01, max=1_000_000_000.)
+                    adv_value = q_value - q_value.mean(dim=0)
+                    weight = F.softplus(adv_value,
+                                        beta=1. / CWPQ_TEMP,
+                                        threshold=20.).clamp(min=0.01)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -444,13 +447,26 @@ class PTSOAgent(object):
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
 
-        if self.hps.ptso_use_sarsa:
-            logger.info("using SARSA")
+        if self.hps.base_next_action == 'beta':
             next_action = torch.Tensor(batch['acs1']).to(self.device)
-        else:
-            logger.info("NOT using SARSA")
+        elif self.hps.base_next_action == 'theta':
             next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
             # Note, here, always stochastic selection of the target action
+        elif self.hps.base_next_action == 'adaptive_ube':
+            next_action_behave = torch.Tensor(batch['acs1']).to(self.device)
+            next_action_policy = float(self.max_ac) * self.actr.sample(next_state, sg=True)
+            with torch.no_grad():
+                _u = self.crit.wrap_with_u_head(self.crit.phi(next_state, next_action_policy))
+                # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
+                u_u_ac, _ = self.ac_factory(self.actr, next_state, U_ESTIM_SAMPLES)
+                u_u_from_actr = self.u_factory(self.crit, next_state, u_u_ac)
+                _u = 1. * (_u - u_u_from_actr.max(dim=1).values).gt(0.)
+                logger.info(f"number of 1's in the unexpected uncertainty vector: {_u.sum()}/{_u.shape[0]}")
+            next_action = (_u * next_action_behave) + ((1 - _u) * next_action_policy)
+        elif self.hps.base_next_action == 'adaptive_rnd':
+            raise NotImplementedError("not implemented yet")  # TODO
+        else:
+            raise ValueError("invalid next action selection method.")
 
         if self.hps.use_c51:
 
@@ -937,15 +953,15 @@ class PTSOAgent(object):
                 elif self.hps.base_pi_loss == 'crr_exp':
                     crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
                 actr_loss = -self.actr.logp(state, action) * crr_adv.detach()
-            elif self.hps.base_pi_loss in ['qprop_exp_mc', 'qprop_exp_td']:
-                if self.hps.base_pi_loss == 'qprop_exp_mc':
-                    qprop_q = self.mc_crit.QZ(state, action)
-                elif self.hps.base_pi_loss == 'qprop_exp_td':
+            elif self.hps.base_pi_loss in ['qprop', 'qqprop_mc', 'qqprop_td']:
+                if self.hps.base_pi_loss in ['qprop', 'qqprop_mc']:
+                    qprop_q = torch.Tensor(batch['rets']).to(self.device)
+                elif self.hps.base_pi_loss == 'qqprop_td':
                     qprop_q = self.crit.QZ(state, action)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
-                if self.hps.base_pi_loss == 'qprop_exp_mc':
+                if self.hps.base_pi_loss in ['qprop', 'qqprop_mc']:
                     emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
-                elif self.hps.base_pi_loss == 'qprop_exp_td':
+                elif self.hps.base_pi_loss == 'qqprop_td':
                     emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac, mc=False).mean(dim=1)
                 qprop_adv = qprop_q - emp_adv_from_actr
                 # Compute the gradients involved in the control variate
@@ -971,18 +987,20 @@ class PTSOAgent(object):
                 else:
                     eta = 1. * covariance.gt(0.).detach()
                 # Augment the log-likelihood weight with the weighted control variate
-                qprop_adv -= eta * control_variate
+                qprop_adv_cv = qprop_adv - (eta * control_variate)
                 # Assemble the loss
-                actr_loss = -self.actr.logp(state, action) * qprop_adv.detach().exp().clamp(max=20.)
+                actr_loss = -self.actr.logp(state, action) * qprop_adv_cv.detach()
                 # Note, a major difference with the original qprop update is the use of the exponential
                 # which does not align with their derivations but is still intuitively consistent
                 actr_loss -= eta * q_from_actr
-            elif self.hps.base_pi_loss == 'awr_exp':
-                awr_q = self.mc_crit.QZ(state, action)
+                if self.hps.base_pi_loss in ['qqprop_mc', 'qqprop_td']:
+                    actr_loss *= torch.exp(qprop_adv / CRR_TEMP).clamp(max=20.).detach()
+            elif self.hps.base_pi_loss == 'awr':
+                awr_q = torch.Tensor(batch['rets']).to(self.device)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
                 emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
                 awr_adv = awr_q - emp_adv_from_actr
-                actr_loss = -self.actr.logp(state, action) * awr_adv.detach().exp().clamp(max=20.)
+                actr_loss = -self.actr.logp(state, action) * awr_adv.detach()
             else:
                 raise NotImplementedError("invalid base loss for policy improvement.")
 
