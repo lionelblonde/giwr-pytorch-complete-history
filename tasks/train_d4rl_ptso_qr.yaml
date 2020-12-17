@@ -102,4 +102,4 @@ ptso_ra_grad_pen_targ_a: 0.
 
 base_next_action: 'theta'
 base_pe_loss: 'cql_2'
-base_pi_loss: 'qqprop_td'
+base_pi_loss: 'lae'
