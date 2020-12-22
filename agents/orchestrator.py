@@ -392,6 +392,8 @@ def learn(args,
                     d['crit_losses'].append(metrics['crit_loss'])
                     if iters_so_far >= agent.hps.warm_start:
                         if args.algo.split('_')[0] == 'ptso':
+                            if agent.hps.base_pi_loss == 'crr_exp':
+                                d['is_crr_adv_clipped_sum'].append(metrics['is_crr_adv_clipped_sum'])
                             d['alpha_pri'].append(metrics['alpha_pri'])
                             d['mcq_fb_mean'].append(metrics['mcq_fb_mean'])
                             d['q_fb_mean'].append(metrics['q_fb_mean'])
@@ -467,6 +469,8 @@ def learn(args,
 
             if iters_so_far - 1 >= agent.hps.warm_start:
                 if args.algo.split('_')[0] == 'ptso':
+                    if agent.hps.base_pi_loss == 'crr_exp':
+                        logger.record_tabular('is_crr_adv_clipped_sum', np.mean(d['is_crr_adv_clipped_sum']))
                     logger.record_tabular('alpha_pri', np.mean(d['alpha_pri']))
                     logger.record_tabular('mcq_fb_mean', np.mean(d['mcq_fb_mean']))
                     logger.record_tabular('q_fb_mean', np.mean(d['q_fb_mean']))
@@ -532,6 +536,9 @@ def learn(args,
                           step=step)
             if iters_so_far - 1 >= agent.hps.warm_start:
                 if args.algo.split('_')[0] == 'ptso':
+                    if agent.hps.base_pi_loss == 'crr_exp':
+                        wandb.log({'is_crr_adv_clipped_sum': np.mean(d['is_crr_adv_clipped_sum'])},
+                                  step=step)
                     wandb.log({'alpha_pri': np.mean(d['alpha_pri']),
                                'mcq_fb_mean': np.mean(d['mcq_fb_mean']),
                                'q_fb_mean': np.mean(d['q_fb_mean']),

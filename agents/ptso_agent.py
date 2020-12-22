@@ -26,6 +26,7 @@ CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
 RND_INNER_SCALE = 100.0
+AL_ALPHA = 0.9
 
 
 class PTSOAgent(object):
@@ -445,9 +446,6 @@ class PTSOAgent(object):
             ra_loss.backward()
             self.ra_opt.step()
 
-        # Checking the validity of the policy evaluation technique
-        assert self.hps.base_pe_loss in ['pure_td', 'cql_1', 'cql_2', 'htg_1', 'htg_2'], "invalid PE technique."
-
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
 
@@ -608,6 +606,23 @@ class PTSOAgent(object):
             targ_q = (reward +
                       (self.hps.gamma ** td_len) * (1. - done) *
                       self.denorm_rets(q_prime))
+
+            # Add target bonus
+            if self.hps.targ_q_bonus in ['al', 'pal']:
+                al_q = self.targ_crit.QZ(state, action)
+                al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                al_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
+                al_adv = al_q - al_emp_adv_from_actr
+            if self.hps.targ_q_bonus == 'pal':
+                pal_q = self.targ_crit.QZ(next_state, next_action)
+                pal_emp_adv_ac, _ = self.ac_factory(self.actr, next_state, ADV_ESTIM_SAMPLES)
+                pal_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
+                pal_adv = pal_q - pal_emp_adv_from_actr
+            if self.hps.targ_q_bonus == 'al':
+                targ_q += AL_ALPHA * al_adv
+            if self.hps.targ_q_bonus == 'pal':
+                targ_q += AL_ALPHA * torch.max(al_adv, pal_adv)
+
             targ_q = self.norm_rets(targ_q).detach()
 
             if self.hps.ret_norm:
@@ -964,45 +979,17 @@ class PTSOAgent(object):
                     crr_q = crr_q.mean(dim=1, keepdim=True)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
                 if 'max' in self.hps.base_pi_loss:
-                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac, mc=False).max(dim=1).values
+                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).max(dim=1).values
                 else:
-                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac, mc=False).mean(dim=1)
+                    emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1)
                 crr_adv = crr_q - emp_adv_from_actr
                 if 'binary' in self.hps.base_pi_loss:
                     crr_adv = 1. * crr_adv.gt(0.)  # trick to easily cast to float
                 elif self.hps.base_pi_loss == 'crr_exp':
                     crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
+                    is_crr_adv_clipped_sum = (1.0 * (crr_adv == 20.)).sum(dim=0, keepdim=True)
+                    metrics['is_crr_adv_clipped_sum'].append(is_crr_adv_clipped_sum)
                 actr_loss = -self.actr.logp(state, action) * crr_adv.detach()
-            elif self.hps.base_pi_loss in ['lae']:
-                lae_q = self.crit.QZ(state, action)
-                if self.hps.use_c51:
-                    lae_q = lae_q.matmul(self.c51_supp).unsqueeze(-1)
-                elif self.hps.use_qr:
-                    lae_q = lae_q.mean(dim=1, keepdim=True)
-                emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
-                emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac, mc=False).mean(dim=1)
-                lae_adv_1 = lae_q - emp_adv_from_actr
-                # Compute the gradients involved in the control variate
-                _grads = autograd.grad(
-                    outputs=q_from_actr,
-                    inputs=[action_from_actr],
-                    only_inputs=True,
-                    grad_outputs=[torch.ones_like(q_from_actr)],
-                    retain_graph=True,
-                    create_graph=True,
-                    allow_unused=False,
-                )
-                grads = list(_grads)[0]
-                # Compute the expected action from the policy, re-using the ones previously predicted
-                expected_action = emp_adv_ac.view(-1, ADV_ESTIM_SAMPLES, self.ac_dim).mean(dim=1)
-                # Assemble the local linear approximation of the advantage
-                lae_adv_2 = (grads * (action - expected_action)).sum(dim=1, keepdim=True)
-                # Assemble the loss
-                lae_adv_1 = torch.exp(lae_adv_1 / CRR_TEMP).clamp(max=20.).detach()
-                lae_adv_2 = torch.exp(lae_adv_2 / CRR_TEMP).clamp(max=20.).detach()
-                lae_adv = torch.max(lae_adv_1, lae_adv_2)
-                logger.info(f"lae loss: loss1 > loss2 -> {(1. * lae_adv_1.gt(lae_adv_2)).sum()}/{lae_adv.shape[0]}")
-                actr_loss = -self.actr.logp(state, action) * lae_adv.detach()
             elif self.hps.base_pi_loss == 'awr':
                 awr_q = torch.Tensor(batch['rets']).to(self.device)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
@@ -1010,6 +997,8 @@ class PTSOAgent(object):
                 awr_adv = awr_q - emp_adv_from_actr
                 awr_adv = torch.exp(awr_adv / CRR_TEMP).clamp(max=20.)
                 actr_loss = -self.actr.logp(state, action) * awr_adv.detach()
+            elif self.hps.base_pi_loss == 'bc':
+                actr_loss = ((self.alpha_ent * log_prob) - self.actr.logp(state, action)).mean()
             else:
                 raise NotImplementedError("invalid base loss for policy improvement.")
 
@@ -1026,8 +1015,8 @@ class PTSOAgent(object):
 
             actr_loss = actr_loss.mean()
         else:
-            # Use behavioral cloning losses
-            actr_loss = F.mse_loss(action, action_from_actr)
+            # Use behavioral cloning loss
+            actr_loss = ((self.alpha_ent * log_prob) - self.actr.logp(state, action)).mean()
         metrics['actr_loss'].append(actr_loss)
 
         self.actr_opt.zero_grad()

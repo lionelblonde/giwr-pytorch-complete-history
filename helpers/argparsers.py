@@ -146,5 +146,6 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--base_next_action', type=str, default=None)
     parser.add_argument('--base_pe_loss', type=str, default=None)
     parser.add_argument('--base_pi_loss', type=str, default=None)
+    parser.add_argument('--targ_q_bonus', type=str, default=None)
 
     return parser

@@ -170,6 +170,12 @@ ENV_BUNDLES = {
                   'walker2d-expert-v0',
                   'walker2d-medium-replay-v0',
                   'walker2d-medium-expert-v0',
+                  'antmaze-umaze-v0',
+                  'antmaze-umaze-diverse-v0',
+                  'antmaze-medium-play-v0',
+                  'antmaze-medium-diverse-v0',
+                  'antmaze-large-play-v0',
+                  'antmaze-large-diverse-v0',
                   'pen-human-v0',
                   'pen-cloned-v0',
                   'pen-expert-v0',
@@ -181,7 +187,10 @@ ENV_BUNDLES = {
                   'relocate-expert-v0',
                   'door-human-v0',
                   'door-cloned-v0',
-                  'door-expert-v0'],
+                  'door-expert-v0',
+                  'kitchen-partial-v0',
+                  'kitchen-complete-v0',
+                  'kitchen-mixed-v0'],
     },
 }
 
@@ -405,6 +414,7 @@ class Spawner(object):
                 'base_next_action': self.config.get('base_next_action', 'theta'),
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
+                'targ_q_bonus': self.config.get('targ_q_bonus', None),
             }
         else:
             # No search, fixed hyper-parameters
@@ -525,6 +535,7 @@ class Spawner(object):
                 'base_next_action': self.config.get('base_next_action', 'theta'),
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
+                'targ_q_bonus': self.config.get('targ_q_bonus', None),
             }
 
         # Duplicate for each environment

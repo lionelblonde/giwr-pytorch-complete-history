@@ -70,7 +70,7 @@ num_tau: 200
 offline: true
 
 state_dependent_std: true
-warm_start: 2000
+warm_start: 20000
 crit_targ_update_freq: 1
 cql_deterministic_backup: true
 cql_use_adaptive_alpha_ent: true
@@ -102,4 +102,5 @@ ptso_ra_grad_pen_targ_a: 0.
 
 base_next_action: 'theta'
 base_pe_loss: 'cql_2'
-base_pi_loss: 'lae'
+base_pi_loss: 'crr_exp'
+targ_q_bonus: 'al'

@@ -247,7 +247,10 @@ class BEARAgent(object):
                 if which == 'maxq':
                     index = q_value.argmax(0)
                 else:  # which == 'cwpq'
-                    weight = torch.exp(q_value / CWPQ_TEMP).clamp(min=0.01, max=1_000_000_000.)
+                    adv_value = q_value - q_value.mean(dim=0)
+                    weight = F.softplus(adv_value,
+                                        beta=1. / CWPQ_TEMP,
+                                        threshold=20.).clamp(min=0.01)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]

@@ -69,7 +69,7 @@ num_tau: 200
 offline: true
 
 state_dependent_std: true
-warm_start: 40000
+warm_start: 20000
 crit_targ_update_freq: 1
 cql_deterministic_backup: true
 cql_use_adaptive_alpha_ent: true
