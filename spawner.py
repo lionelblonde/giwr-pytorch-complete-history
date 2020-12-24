@@ -34,6 +34,10 @@ ENV_BUNDLES = {
         'debug_antmaze': ['antmaze-medium-play-v0'],
         'debug_adroit': ['pen-human-v0'],
         'debug_kitchen': ['kitchen-partial-v0'],
+        'debug_big': ['hopper-expert-v0',
+                      'pen-cloned-v0',
+                      'hammer-expert-v0',
+                      'antmaze-umaze-v0'],
 
         'p_maze2d': ['maze2d-open-v0',
                      'maze2d-umaze-v1',
@@ -160,11 +164,6 @@ ENV_BUNDLES = {
                   'hopper-expert-v0',
                   'hopper-medium-replay-v0',
                   'hopper-medium-expert-v0',
-                  'halfcheetah-random-v0',
-                  'halfcheetah-medium-v0',
-                  'halfcheetah-expert-v0',
-                  'halfcheetah-medium-replay-v0',
-                  'halfcheetah-medium-expert-v0',
                   'walker2d-random-v0',
                   'walker2d-medium-v0',
                   'walker2d-expert-v0',
@@ -224,10 +223,8 @@ class Spawner(object):
                           'offline', 'state_dependent_std', 'use_adaptive_alpha',
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
-                          'cql_use_adaptive_alpha_pri', 'ptso_use_targ_for_u',
-                          'ptso_qprop_aggressive_eta', 'ptso_use_u_inference_time',
-                          'ptso_use_rnd_monitoring',
-                          'ptso_use_or_monitor_grad_pen', 'ptso_use_reward_averager']
+                          'cql_use_adaptive_alpha_pri',
+                          'ptso_use_rnd_monitoring', 'ptso_use_reward_averager']
 
         if 'slurm' in self.args.deployment:
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -392,25 +389,13 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
 
-                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
-                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
-                'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
-                'ptso_qprop_aggressive_eta': self.config.get('ptso_qprop_aggressive_eta', True),
-                'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
-                'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
-                'ptso_phi_grad_pen_scale_s': self.config.get('ptso_phi_grad_pen_scale_s', 0.),
-                'ptso_phi_grad_pen_scale_a': self.config.get('ptso_phi_grad_pen_scale_a', 0.),
-                'ptso_phi_grad_pen_targ_s': self.config.get('ptso_phi_grad_pen_targ_s', 0.),
-                'ptso_phi_grad_pen_targ_a': self.config.get('ptso_phi_grad_pen_targ_a', 0.),
-
                 'ptso_use_reward_averager': self.config.get('ptso_use_reward_averager', False),
                 'ptso_ra_lr': self.config.get('ptso_ra_lr', 1e-3),
                 'ptso_ra_grad_pen_scale_s': self.config.get('ptso_ra_grad_pen_scale_s', 0.),
                 'ptso_ra_grad_pen_scale_a': self.config.get('ptso_ra_grad_pen_scale_a', 0.),
                 'ptso_ra_grad_pen_targ_s': self.config.get('ptso_ra_grad_pen_targ_s', 0.),
                 'ptso_ra_grad_pen_targ_a': self.config.get('ptso_ra_grad_pen_targ_a', 0.),
-
                 'base_next_action': self.config.get('base_next_action', 'theta'),
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
@@ -513,25 +498,13 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
 
-                'ptso_use_targ_for_u': self.config.get('ptso_use_targ_for_u', False),
-                'ptso_num_mat_updates_per_iter': self.config.get('ptso_num_mat_updates_per_iter', 100),
-                'ptso_u_scale_p_i': self.config.get('ptso_u_scale_p_i', 0.),
-                'ptso_qprop_aggressive_eta': self.config.get('ptso_qprop_aggressive_eta', True),
-                'ptso_use_u_inference_time': self.config.get('ptso_use_u_inference_time', False),
                 'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
-                'ptso_use_or_monitor_grad_pen': self.config.get('ptso_use_or_monitor_grad_pen', False),
-                'ptso_phi_grad_pen_scale_s': self.config.get('ptso_phi_grad_pen_scale_s', 0.),
-                'ptso_phi_grad_pen_scale_a': self.config.get('ptso_phi_grad_pen_scale_a', 0.),
-                'ptso_phi_grad_pen_targ_s': self.config.get('ptso_phi_grad_pen_targ_s', 0.),
-                'ptso_phi_grad_pen_targ_a': self.config.get('ptso_phi_grad_pen_targ_a', 0.),
-
                 'ptso_use_reward_averager': self.config.get('ptso_use_reward_averager', False),
                 'ptso_ra_lr': self.config.get('ptso_ra_lr', 1e-3),
                 'ptso_ra_grad_pen_scale_s': self.config.get('ptso_ra_grad_pen_scale_s', 0.),
                 'ptso_ra_grad_pen_scale_a': self.config.get('ptso_ra_grad_pen_scale_a', 0.),
                 'ptso_ra_grad_pen_targ_s': self.config.get('ptso_ra_grad_pen_targ_s', 0.),
                 'ptso_ra_grad_pen_targ_a': self.config.get('ptso_ra_grad_pen_targ_a', 0.),
-
                 'base_next_action': self.config.get('base_next_action', 'theta'),
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),

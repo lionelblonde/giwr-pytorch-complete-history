@@ -3,7 +3,7 @@ import math
 from copy import copy, deepcopy
 import os
 import os.path as osp
-from collections import defaultdict, deque
+from collections import defaultdict
 import signal
 
 import wandb
@@ -15,9 +15,7 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video
 
 
-MAXLEN = 40
-
-BRAC_BEHAV_STEPS = 2_000
+BRAC_BEHAV_STEPS = 50_000  # note: this has nothing to do with 'warm-starting with behavioral cloning'
 
 
 def rollout_generator(env, agent, rollout_len, use_noise_process):
@@ -93,7 +91,6 @@ def ep_generator(env, agent, render, record, which):
     # Not necessarily used
     qs = []
     mcqs = []
-    us = []
 
     while True:
 
@@ -104,7 +101,6 @@ def ep_generator(env, agent, render, record, which):
             ac = _ac['ac']
             q = _ac['q_mean']
             mcq = _ac['mc_q_mean']
-            us = _ac['u_mean']
             qs.append(q)
             mcqs.append(mcq)
         else:
@@ -143,8 +139,7 @@ def ep_generator(env, agent, render, record, which):
                    "ep_env_ret": cur_ep_env_ret}
             if isinstance(_ac, dict):
                 out.update({'q': np.array(qs).mean(),
-                            'mcq': np.array(mcqs).mean(),
-                            'u': np.array(us).mean()})
+                            'mcq': np.array(mcqs).mean()})
             if record:
                 out.update({"obs_render": obs_render})
 
@@ -161,7 +156,6 @@ def ep_generator(env, agent, render, record, which):
             # Not necessarily used
             qs = []
             mcqs = []
-            us = []
 
             ob = np.array(env.reset())
 
@@ -270,9 +264,6 @@ def learn(args,
     if rank == 0:
         # Create collections
         d = defaultdict(list)
-        main_eval_deque = deque(maxlen=MAXLEN)
-        maxq_eval_deque = deque(maxlen=MAXLEN)
-        cwpq_eval_deque = deque(maxlen=MAXLEN)
 
         # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
@@ -395,31 +386,11 @@ def learn(args,
                             if agent.hps.base_pi_loss == 'crr_exp':
                                 d['is_crr_adv_clipped_sum'].append(metrics['is_crr_adv_clipped_sum'])
                             d['alpha_pri'].append(metrics['alpha_pri'])
-                            d['mcq_fb_mean'].append(metrics['mcq_fb_mean'])
-                            d['q_fb_mean'].append(metrics['q_fb_mean'])
-                            d['q_fb_std'].append(metrics['q_fb_std'])
-                            d['q_fb_min'].append(metrics['q_fb_min'])
-                            d['q_fb_max'].append(metrics['q_fb_max'])
                             d['gap'].append(metrics['gap'])
-                            d['mcq_fa_mean'].append(metrics['mcq_fa_mean'])
-                            d['q_fa_mean'].append(metrics['q_fa_mean'])
-                            d['q_fa_std'].append(metrics['q_fa_std'])
-                            d['q_fa_min'].append(metrics['q_fa_min'])
-                            d['q_fa_max'].append(metrics['q_fa_max'])
-                            if agent.hps.ptso_use_or_monitor_grad_pen:
-                                d['phi_gradnorm_s'].append(metrics['phi_gradnorm_s'])
-                                d['phi_gradnorm_a'].append(metrics['phi_gradnorm_a'])
-                            d['u_fa_mean'].append(metrics['u_fa_mean'])
-                            d['u_fa_std'].append(metrics['u_fa_std'])
-                            d['u_fa_min'].append(metrics['u_fa_min'])
-                            d['u_fa_max'].append(metrics['u_fa_max'])
-                            d['v_fb_mean'].append(metrics['v_fb_mean'])
-                            d['u_fb_mean'].append(metrics['u_fb_mean'])
-                            d['u_losses'].append(metrics['u_loss'])  # careful, key mismatch
-                            if agent.hps.ptso_use_rnd_monitoring:
+                            if (agent.hps.ptso_use_rnd_monitoring or
+                                    agent.hps.base_pe_loss in ['htg_1', 'htg_2'] or
+                                    agent.hps.base_next_action == 'beta_theta_max_rnd'):
                                 d['rnd_score'].append(metrics['rnd_score'])
-                            d['v_fu_mean'].append(metrics['v_fu_mean'])
-                            d['u_fu_mean'].append(metrics['u_fu_mean'])
                     if agent.hps.clipped_double:
                         d['twin_losses'].append(metrics['twin_loss'])
                     if agent.hps.prioritized_replay:
@@ -447,10 +418,6 @@ def learn(args,
                     if args.algo.split('_')[0] == 'ptso':
                         d['eval_q'].append(maxq_eval_ep['q'])
                         d['eval_mcq'].append(maxq_eval_ep['mcq'])
-                        d['eval_u'].append(maxq_eval_ep['u'])
-                main_eval_deque.append(np.mean(d['main_eval_env_ret']))
-                maxq_eval_deque.append(np.mean(d['maxq_eval_env_ret']))
-                cwpq_eval_deque.append(np.mean(d['cwpq_eval_env_ret']))
 
         # Increment counters
         iters_so_far += 1
@@ -472,43 +439,20 @@ def learn(args,
                     if agent.hps.base_pi_loss == 'crr_exp':
                         logger.record_tabular('is_crr_adv_clipped_sum', np.mean(d['is_crr_adv_clipped_sum']))
                     logger.record_tabular('alpha_pri', np.mean(d['alpha_pri']))
-                    logger.record_tabular('mcq_fb_mean', np.mean(d['mcq_fb_mean']))
-                    logger.record_tabular('q_fb_mean', np.mean(d['q_fb_mean']))
-                    logger.record_tabular('q_fb_std', np.mean(d['q_fb_std']))
-                    logger.record_tabular('q_fb_min', np.mean(d['q_fb_min']))
-                    logger.record_tabular('q_fb_max', np.mean(d['q_fb_max']))
                     logger.record_tabular('gap', np.mean(d['gap']))
-                    logger.record_tabular('mcq_fa_mean', np.mean(d['mcq_fa_mean']))
-                    logger.record_tabular('q_fa_mean', np.mean(d['q_fa_mean']))
-                    logger.record_tabular('q_fa_std', np.mean(d['q_fa_std']))
-                    logger.record_tabular('q_fa_min', np.mean(d['q_fa_min']))
-                    logger.record_tabular('q_fa_max', np.mean(d['q_fa_max']))
-                    if agent.hps.ptso_use_or_monitor_grad_pen:
-                        logger.record_tabular('phi_gradnorm_s', np.mean(d['phi_gradnorm_s']))
-                        logger.record_tabular('phi_gradnorm_a', np.mean(d['phi_gradnorm_a']))
-                    logger.record_tabular('u_fa_mean', np.mean(d['u_fa_mean']))
-                    logger.record_tabular('u_fa_std', np.mean(d['u_fa_std']))
-                    logger.record_tabular('u_fa_min', np.mean(d['u_fa_min']))
-                    logger.record_tabular('u_fa_max', np.mean(d['u_fa_max']))
-                    logger.record_tabular('v_fb_mean', np.mean(d['v_fb_mean']))
-                    logger.record_tabular('u_fb_mean', np.mean(d['u_fb_mean']))
-                    if agent.hps.ptso_use_rnd_monitoring:
+                    if (agent.hps.ptso_use_rnd_monitoring or
+                            agent.hps.base_pe_loss in ['htg_1', 'htg_2'] or
+                            agent.hps.base_next_action == 'beta_theta_max_rnd'):
                         logger.record_tabular('rnd_score', np.mean(d['rnd_score']))
-                    logger.record_tabular('v_fu_mean', np.mean(d['v_fu_mean']))
-                    logger.record_tabular('u_fu_mean', np.mean(d['u_fu_mean']))
             logger.record_tabular('main_eval_len', np.mean(d['main_eval_len']))
             logger.record_tabular('maxq_eval_len', np.mean(d['maxq_eval_len']))
             logger.record_tabular('cwpq_eval_len', np.mean(d['cwpq_eval_len']))
             logger.record_tabular('main_eval_env_ret', np.mean(d['main_eval_env_ret']))
             logger.record_tabular('maxq_eval_env_ret', np.mean(d['maxq_eval_env_ret']))
             logger.record_tabular('cwpq_eval_env_ret', np.mean(d['cwpq_eval_env_ret']))
-            logger.record_tabular('avg_main_eval_env_ret', np.mean(main_eval_deque))
-            logger.record_tabular('avg_maxq_eval_env_ret', np.mean(maxq_eval_deque))
-            logger.record_tabular('avg_cwpq_eval_env_ret', np.mean(cwpq_eval_deque))
             if args.algo.split('_')[0] == 'ptso':
                 logger.record_tabular('eval_q', np.mean(d['eval_q']))
                 logger.record_tabular('eval_mcq', np.mean(d['eval_mcq']))
-                logger.record_tabular('eval_u', np.mean(d['eval_u']))
             logger.info("dumping stats in .csv file")
             logger.dump_tabular()
 
@@ -540,32 +484,11 @@ def learn(args,
                         wandb.log({'is_crr_adv_clipped_sum': np.mean(d['is_crr_adv_clipped_sum'])},
                                   step=step)
                     wandb.log({'alpha_pri': np.mean(d['alpha_pri']),
-                               'mcq_fb_mean': np.mean(d['mcq_fb_mean']),
-                               'q_fb_mean': np.mean(d['q_fb_mean']),
-                               'q_fb_std': np.mean(d['q_fb_std']),
-                               'q_fb_min': np.mean(d['q_fb_min']),
-                               'q_fb_max': np.mean(d['q_fb_max']),
-                               'gap': np.mean(d['gap']),
-                               'mcq_fa_mean': np.mean(d['mcq_fa_mean']),
-                               'q_fa_mean': np.mean(d['q_fa_mean']),
-                               'q_fa_std': np.mean(d['q_fa_std']),
-                               'q_fa_min': np.mean(d['q_fa_min']),
-                               'q_fa_max': np.mean(d['q_fa_max']),
-                               'u_fa_mean': np.mean(d['u_fa_mean']),
-                               'u_fa_std': np.mean(d['u_fa_std']),
-                               'u_fa_min': np.mean(d['u_fa_min']),
-                               'u_fa_max': np.mean(d['u_fa_max']),
-                               'v_fb_mean': np.mean(d['v_fb_mean']),
-                               'u_fb_mean': np.mean(d['u_fb_mean']),
-                               'u_loss': np.mean(d['u_losses']),
-                               'v_fu_mean': np.mean(d['v_fu_mean']),
-                               'u_fu_mean': np.mean(d['u_fu_mean'])},
+                               'gap': np.mean(d['gap'])},
                               step=step)
-                    if agent.hps.ptso_use_or_monitor_grad_pen:
-                        wandb.log({'phi_gradnorm_s': np.mean(d['phi_gradnorm_s']),
-                                   'phi_gradnorm_a': np.mean(d['phi_gradnorm_a'])},
-                                  step=step)
-                    if agent.hps.ptso_use_rnd_monitoring:
+                    if (agent.hps.ptso_use_rnd_monitoring or
+                            agent.hps.base_pe_loss in ['htg_1', 'htg_2'] or
+                            agent.hps.base_next_action == 'beta_theta_max_rnd'):
                         wandb.log({'rnd_score': np.mean(d['rnd_score'])},
                                   step=step)
             wandb.log({'main_eval_len': np.mean(d['main_eval_len']),
@@ -573,15 +496,11 @@ def learn(args,
                        'cwpq_eval_len': np.mean(d['cwpq_eval_len']),
                        'main_eval_env_ret': np.mean(d['main_eval_env_ret']),
                        'maxq_eval_env_ret': np.mean(d['maxq_eval_env_ret']),
-                       'cwpq_eval_env_ret': np.mean(d['cwpq_eval_env_ret']),
-                       'avg_main_eval_env_ret': np.mean(main_eval_deque),
-                       'avg_maxq_eval_env_ret': np.mean(maxq_eval_deque),
-                       'avg_cwpq_eval_env_ret': np.mean(cwpq_eval_deque)},
+                       'cwpq_eval_env_ret': np.mean(d['cwpq_eval_env_ret'])},
                       step=step)
             if args.algo.split('_')[0] == 'ptso':
                 wandb.log({'eval_q': np.mean(d['eval_q']),
-                           'eval_mcq': np.mean(d['eval_mcq']),
-                           'eval_u': np.mean(d['eval_u'])},
+                           'eval_mcq': np.mean(d['eval_mcq'])},
                           step=step)
 
             # Clear the iteration's running stats

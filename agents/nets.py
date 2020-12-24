@@ -102,7 +102,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
 
-    def __init__(self, env, hps, rms_obs, hidden_dims, ube=False):
+    def __init__(self, env, hps, rms_obs, hidden_dims):
         super(Critic, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -133,22 +133,6 @@ class Critic(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.head.apply(init(weight_scale=0.01))
 
-        if ube:
-            self.u_fc_stack = nn.Sequential(OrderedDict([
-                ('fc_block_1', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(hidden_dims[1], hidden_dims[1])),
-                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[1])),
-                    ('nl', nn.ReLU()),
-                ]))),
-            ]))
-            self.u_head = nn.Linear(hidden_dims[1], 1)
-            # Perform initialization
-            self.u_fc_stack.apply(init(weight_scale=math.sqrt(2)))
-            self.u_head.apply(init(weight_scale=0.01))
-
-    def phi(self, ob, ac):
-        return self.forward(ob, ac)
-
     def QZ(self, ob, ac):
         x = self.forward(ob, ac)
         x = self.head(x)
@@ -157,25 +141,12 @@ class Critic(nn.Module):
             x = F.log_softmax(x, dim=1).exp()
         return x
 
-    def wrap_with_u_head(self, x):
-        return self.u_head(self.u_fc_stack(x))
-
     def forward(self, ob, ac):
         if self.rms_obs is not None:
             ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
         return x
-
-    @property
-    def q_trainable_params(self):
-        return ([p for p in self.fc_stack.parameters()] +
-                [p for p in self.head.parameters()])
-
-    @property
-    def u_trainable_params(self):
-        return ([p for p in self.u_fc_stack.parameters()] +
-                [p for p in self.u_head.parameters()])
 
     @property
     def out_params(self):

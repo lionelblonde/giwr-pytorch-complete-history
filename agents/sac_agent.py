@@ -95,6 +95,7 @@ class SACAgent(object):
             'obs0': (self.ob_dim,),
             'obs1': (self.ob_dim,),
             'acs': (self.ac_dim,),
+            'acs1': (self.ac_dim,),  # SARSA
             'rews': (1,),
             'dones1': (1,),
             'rets': (1,),

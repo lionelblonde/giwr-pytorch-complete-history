@@ -14,6 +14,8 @@ matplotlib.use("TkAgg")
 from matplotlib import pyplot as plt  # noqa
 import matplotlib.font_manager as fm  # noqa
 
+from helpers.math_util import smooth_out_w_ema
+
 
 parser = argparse.ArgumentParser(description="Plotter")
 parser.add_argument('--font', type=str, default='Colfax')
@@ -209,10 +211,13 @@ def plot(args):
                 std = np.std(np.column_stack([col_[0:xmax] for col_ in ycol_dump[key]]), axis=-1)
 
                 # Plot the computed statistics
-                ax.plot(xcol_dump[key][0][0:xmax], mean, color=color_map[key])
+                WEIGHT = 0.9
+                smooth_mean = np.array(smooth_out_w_ema(mean, weight=WEIGHT))
+                smooth_std = np.array(smooth_out_w_ema(std, weight=WEIGHT))
+                ax.plot(xcol_dump[key][0][0:xmax], smooth_mean, color=color_map[key])
                 ax.fill_between(xcol_dump[key][0][0:xmax],
-                                mean - (args.stdfrac * std),
-                                mean + (args.stdfrac * std),
+                                smooth_mean - (args.stdfrac * smooth_std),
+                                smooth_mean + (args.stdfrac * smooth_std),
                                 facecolor=(*color_map[key], 0.25))
 
                 # Get the maximum Y value accross all the experiments

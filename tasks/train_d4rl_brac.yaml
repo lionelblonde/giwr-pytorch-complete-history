@@ -67,12 +67,12 @@ num_tau: 200
 # Offline RL
 offline: true
 
-state_dependent_std: false
+state_dependent_std: true
 behavior_lr: 3.0e-4
 log_alpha_lr: 3.0e-4
 warm_start: 20000
-brac_use_adaptive_alpha_ent: false
-brac_use_adaptive_alpha_div: false
+brac_use_adaptive_alpha_ent: true
+brac_use_adaptive_alpha_div: true
 brac_init_temp_log_alpha_ent: 0.
 brac_init_temp_log_alpha_div: 0.1
 brac_value_kl_pen: true

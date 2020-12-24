@@ -67,12 +67,12 @@ num_tau: 200
 # Offline RL
 offline: true
 
-state_dependent_std: false
+state_dependent_std: true
 behavior_lr: 3.0e-4
-use_adaptive_alpha: false
+use_adaptive_alpha: true
 log_alpha_lr: 3.0e-4
 init_temp_log_alpha: 100.
-warm_start: 40000
+warm_start: 20000
 bear_mmd_kernel: 'laplacian'
 bear_mmd_sigma: 20
 bear_mmd_epsilon: 0.05

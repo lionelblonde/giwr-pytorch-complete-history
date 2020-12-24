@@ -109,6 +109,7 @@ class BRACAgent(object):
             'obs0': (self.ob_dim,),
             'obs1': (self.ob_dim,),
             'acs': (self.ac_dim,),
+            'acs1': (self.ac_dim,),  # SARSA
             'rews': (1,),
             'dones1': (1,),
             'rets': (1,),
@@ -300,9 +301,10 @@ class BRACAgent(object):
         bc_loss_deque = deque(maxlen=BC_TRAINING_STEPS_PER_BATCH)
 
         for _ in range(BC_TRAINING_STEPS_PER_BATCH):
+            actr_b_loss = -self.actr_b.logp(state, action).mean()
             action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
-            actr_b_loss = F.mse_loss(action_from_actr_b, action)
-            bc_loss_deque.append(actr_b_loss.detach().cpu().numpy())
+            ac_gap = F.mse_loss(action_from_actr_b, action)
+            bc_loss_deque.append(ac_gap.detach().cpu().numpy())
 
             self.actr_b_opt.zero_grad()
             actr_b_loss.backward()

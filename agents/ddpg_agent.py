@@ -121,6 +121,7 @@ class DDPGAgent(object):
             'obs0': (self.ob_dim,),
             'obs1': (self.ob_dim,),
             'acs': (self.ac_dim,),
+            'acs1': (self.ac_dim,),  # SARSA
             'rews': (1,),
             'dones1': (1,),
             'rets': (1,),
@@ -328,8 +329,6 @@ class DDPGAgent(object):
 
         if self.hps.use_c51:
 
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> C51.
-
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
             # Compute target QZ estimate
@@ -387,8 +386,6 @@ class DDPGAgent(object):
 
         elif self.hps.use_qr:
 
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> QR.
-
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
 
@@ -435,8 +432,6 @@ class DDPGAgent(object):
             _actr_loss = -self.crit.QZ(state, self.actr.act(state))
 
         else:
-
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA.
 
             # Compute QZ estimate
             q = self.denorm_rets(self.crit.QZ(state, action))

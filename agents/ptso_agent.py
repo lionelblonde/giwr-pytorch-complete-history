@@ -111,21 +111,21 @@ class PTSOAgent(object):
         self.maxq_eval_actr.load_state_dict(self.actr.state_dict())
         self.cwpq_eval_actr.load_state_dict(self.actr.state_dict())
 
-        self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
-        self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=True).to(self.device)
+        self.crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
+        self.targ_crit = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
-            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
+            self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
         # First create another set of hyper-parameters in which the critic is non-distributional
         # and then create a critic to be trained via Monte Carlo estimation
         _hps = copy(self.hps)
         _hps.use_c51 = False
         _hps.use_qr = False
-        self.mc_crit = Critic(self.env, _hps, self.rms_obs, hidden_dims[1], ube=False).to(self.device)
+        self.mc_crit = Critic(self.env, _hps, self.rms_obs, hidden_dims[1]).to(self.device)
 
         self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
@@ -144,9 +144,6 @@ class PTSOAgent(object):
 
         # Set target entropy to minus action dimension
         self.targ_ent = -self.ac_dim
-
-        # Initialize the precision matrix
-        self.precision = 5. * torch.eye(hidden_dims[1][-1]).to(self.device)
 
         # Set up replay buffer
         shapes = {
@@ -167,17 +164,15 @@ class PTSOAgent(object):
         # Set up the optimizers
         self.actr_opt = torch.optim.Adam(self.actr.parameters(),
                                          lr=self.hps.actor_lr)
-        self.crit_opt = torch.optim.Adam(self.crit.q_trainable_params,
+        self.crit_opt = torch.optim.Adam(self.crit.parameters(),
                                          lr=self.hps.critic_lr,
                                          weight_decay=self.hps.wd_scale)
         if self.hps.clipped_double:
-            self.twin_opt = torch.optim.Adam(self.twin.q_trainable_params,
+            self.twin_opt = torch.optim.Adam(self.twin.parameters(),
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        self.u_opt = torch.optim.Adam(self.crit.u_trainable_params, lr=1e-3)
-
-        self.mc_crit_opt = torch.optim.Adam(self.mc_crit.q_trainable_params, lr=3e-4)
+        self.mc_crit_opt = torch.optim.Adam(self.mc_crit.parameters(), lr=3e-4)
 
         if self.hps.cql_use_adaptive_alpha_ent:  # cql choice: same lr as actor
             self.log_alpha_ent_opt = torch.optim.Adam([self.log_alpha_ent],
@@ -326,15 +321,9 @@ class PTSOAgent(object):
                 # Among the 100 values, take the one with the highest Q value (or Z value)
                 q_value = self.crit.QZ(ob, ac).mean(dim=1)
 
-                u_value = self.crit.wrap_with_u_head(self.crit.phi(ob, ac)).mean(dim=1).clamp(min=1e-6).sqrt()
-
-                if self.hps.ptso_use_u_inference_time:
-                    q_value -= self.hps.ptso_u_scale_p_i * u_value
-
                 if which == 'maxq':
                     q_mean = q_value.mean(dim=0)  # scalar
                     mc_q_mean = self.mc_crit.QZ(ob, ac).mean()  # scalar
-                    u_mean = u_value.mean(dim=0)  # scalar
                     index = q_value.argmax(0)
                 else:  # which == 'cwpq'
                     adv_value = q_value - q_value.mean(dim=0)
@@ -359,8 +348,7 @@ class PTSOAgent(object):
         if which == 'maxq':
             return {'ac': ac,
                     'q_mean': q_mean.cpu().detach().numpy().flatten(),
-                    'mc_q_mean': mc_q_mean.cpu().detach().numpy().flatten(),
-                    'u_mean': u_mean.cpu().detach().numpy().flatten()}
+                    'mc_q_mean': mc_q_mean.cpu().detach().numpy().flatten()}
         else:
             return ac
 
@@ -390,14 +378,6 @@ class PTSOAgent(object):
         else:
             return q_value
 
-    def u_factory(self, crit, ob, ac):
-        ob_dim = ob.shape[0]
-        ac_dim = ac.shape[0]
-        num_repeat = int(ac_dim / ob_dim)
-        _ob = ob.unsqueeze(1).repeat(1, num_repeat, 1).view(ob.shape[0] * num_repeat, ob.shape[1])
-        u_value = crit.wrap_with_u_head(self.crit.phi(_ob, ac)).view(ob.shape[0], num_repeat, 1)
-        return u_value
-
     def update_actor_critic(self, batch, update_actor, iters_so_far):
         """Train the actor and critic networks
         Note, 'update_actor' is here to keep the unified signature.
@@ -416,7 +396,7 @@ class PTSOAgent(object):
             iws = torch.Tensor(batch['iws']).to(self.device)
         if self.hps.n_step_returns:
             td_len = torch.Tensor(batch['td_len']).to(self.device)
-            next_state_td1 = torch.Tensor(batch['obs1_td1']).to(self.device)
+            # next_state_td1 = torch.Tensor(batch['obs1_td1']).to(self.device)  # left here to show it's available
         else:
             td_len = torch.ones_like(done).to(self.device)
 
@@ -458,31 +438,18 @@ class PTSOAgent(object):
             _q = self.q_factory(self.crit, next_state, _ac)  # shape: batch_size, 10, 1
             index = _q.argmax(1)
             next_action = _ac[index].squeeze(1)
-        elif 'beta_theta_max' in self.hps.base_next_action:  # spibb, brpo almost
+        elif self.hps.base_next_action == 'beta_theta_max':  # spibb, brpo almost
             next_action_behave = torch.Tensor(batch['acs1']).to(self.device)
             _ac, _ = self.ac_factory(self.actr, next_state, 10)
             _q = self.q_factory(self.crit, next_state, _ac)  # shape: batch_size, 10, 1
             index = _q.argmax(1)
             next_action_policy = _ac[index].squeeze(1)
-            if 'ube' in self.hps.base_next_action:
-                with torch.no_grad():
-                    _u = self.crit.wrap_with_u_head(self.crit.phi(next_state, next_action_policy))
-                    # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
-                    u_u_ac, _ = self.ac_factory(self.actr, next_state, U_ESTIM_SAMPLES)
-                    u_u_from_actr = self.u_factory(self.crit, next_state, u_u_ac)
-                    _u = 1. * (_u - u_u_from_actr.max(dim=1).values).gt(0.)
-                    logger.info(f"number of 1's in the uncertainty score: {_u.sum()}/{_u.shape[0]}")
-                next_action = (_u * next_action_behave) + ((1 - _u) * next_action_policy)
-            elif 'rnd' in self.hps.base_next_action:
-                with torch.no_grad():
-                    _rnd_score = self.rnd.get_int_rew(next_state, next_action_policy)
-                    _rnd_score = 1.0 - torch.exp(-_rnd_score * RND_INNER_SCALE)
-                    _rnd = 1. * _rnd_score.gt(0.6)
-                    print(_rnd_score.shape)
-                    logger.info(f"number of 1's in the uncertainty score: {_rnd.sum()}/{_rnd.shape[0]}")
-                next_action = (_rnd * next_action_behave) + ((1 - _rnd) * next_action_policy)
-            else:
-                raise ValueError("invalid next action selection method.")
+            with torch.no_grad():
+                _rnd_score = self.rnd.get_int_rew(next_state, next_action_policy)
+                _rnd_score = 1.0 - torch.exp(-_rnd_score * RND_INNER_SCALE)
+                _rnd = 1. * _rnd_score.gt(0.6)
+                logger.info(f"number of 1's in the uncertainty score: {_rnd.sum()}/{_rnd.shape[0]}")
+            next_action = (_rnd * next_action_behave) + ((1 - _rnd) * next_action_policy)
         else:
             raise ValueError("invalid next action selection method.")
 
@@ -761,54 +728,6 @@ class PTSOAgent(object):
         crit_loss += min_crit_loss
         if self.hps.clipped_double:
             twin_loss += min_twin_loss
-
-        if self.hps.ptso_use_or_monitor_grad_pen:
-            # Add (or just monitor) gradient penalties to regularize the phi embedding
-
-            # Note, we usually dump the metrics even if it's not an eval round (legibility),
-            # but this bit it too computationally expensive
-            if self.hps.ptso_phi_grad_pen_scale_s > 0 or self.hps.ptso_phi_grad_pen_scale_a > 0:
-                # Use one or two gradient penalties in training
-                crit_grad_pen_s, crit_grad_pen_a, crit_grads_norm_s, crit_grads_norm_a = self.grad_pen(
-                    fa=self.crit.phi,
-                    state=state,
-                    action=action,
-                    targ_gn_s=self.hps.ptso_phi_grad_pen_targ_s,
-                    targ_gn_a=self.hps.ptso_phi_grad_pen_targ_a,
-                )
-                metrics['phi_gradnorm_s'].append(crit_grads_norm_s.mean())
-                metrics['phi_gradnorm_a'].append(crit_grads_norm_a.mean())
-                if self.hps.ptso_phi_grad_pen_scale_s > 0:
-                    crit_loss += self.hps.ptso_phi_grad_pen_scale_s * crit_grad_pen_s.mean()
-                if self.hps.ptso_phi_grad_pen_scale_a > 0:
-                    crit_loss += self.hps.ptso_phi_grad_pen_scale_a * crit_grad_pen_a.mean()
-
-                if self.hps.clipped_double:
-                    if self.hps.ptso_phi_grad_pen_scale_s > 0 or self.hps.ptso_phi_grad_pen_scale_a > 0:
-                        twin_grad_pen_s, twin_grad_pen_a, twin_grads_norm_s, twin_grads_norm_a = self.grad_pen(
-                            fa=self.twin.phi,
-                            state=state,
-                            action=action,
-                            targ_gn_s=self.hps.ptso_phi_grad_pen_targ_s,
-                            targ_gn_a=self.hps.ptso_phi_grad_pen_targ_a,
-                        )
-                    if self.hps.ptso_phi_grad_pen_scale_s > 0:
-                        twin_loss += self.hps.ptso_phi_grad_pen_scale_s * twin_grad_pen_s.mean()
-                    if self.hps.ptso_phi_grad_pen_scale_a > 0:
-                        twin_loss += self.hps.ptso_phi_grad_pen_scale_a * twin_grad_pen_a.mean()
-            else:
-                if iters_so_far % self.hps.eval_frequency == 0:
-                    # Just monitor the gradient norms' values
-                    _, _, crit_grads_norm_s, crit_grads_norm_a = self.grad_pen(
-                        fa=self.crit.phi,
-                        state=state,
-                        action=action,
-                        targ_gn_s=self.hps.ptso_phi_grad_pen_targ_s,
-                        targ_gn_a=self.hps.ptso_phi_grad_pen_targ_a,
-                    )
-                    metrics['phi_gradnorm_s'].append(crit_grads_norm_s.mean())
-                    metrics['phi_gradnorm_a'].append(crit_grads_norm_a.mean())
-
         self.crit_opt.zero_grad()
         crit_loss.backward(retain_graph=True)
         # It is here necessary to retain the graph because the other Q function(s) in the ensemble re-use it
@@ -832,96 +751,16 @@ class PTSOAgent(object):
         if self.hps.prioritized_replay:
             metrics['iws'].append(iws)
 
-        # Piece #4 (PTSO): uncertainty via Uncertainty Bellman Equation, with its own optimizer
-        # The target of the Uncertainty Bellman Equation is the variance estimate of the error epsilon (paper)
-
-        # We don't use the twin critic past this point, to same on evalutations and matrix multiplications
-
-        # Depending on a hyper-parameter, use the target critics in `targ_u` calculation, or not at all here
-        crit_in_ube_targ = self.targ_crit if self.hps.ptso_use_targ_for_u else self.crit
-
-        # Create the UBE target
-        # Computations done with batch dimension
-        with torch.no_grad():
-            # Assemble the uncertainty bellman target
-            _new_phi = self.crit.phi(state, action).unsqueeze(-1)
-            _new_phi_t = torch.transpose(_new_phi, -1, -2)
-            inflated_precision = self.precision.unsqueeze(0).repeat(self.hps.batch_size, 1, 1)
-            v_q = torch.bmm(torch.bmm(_new_phi_t,
-                                      inflated_precision),
-                            _new_phi).squeeze(-1)
-            if self.hps.n_step_returns:
-                _next_state = next_state_td1
-                _next_action = float(self.max_ac) * self.actr.sample(_next_state, sg=True)
-            else:
-                _next_state = next_state
-                _next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)  # re-compute just in case
-            u_prime = crit_in_ube_targ.wrap_with_u_head(crit_in_ube_targ.phi(_next_state, _next_action))
-            targ_u = (v_q + ((self.hps.gamma ** 2) * (1. - done) * u_prime)).clamp(min=0.)
-            # Note, we clamp for the target to be non-negative, to urge the prediction to always be non-negative
-        u_pred = self.crit.wrap_with_u_head(self.crit.phi(state, action).detach())  # can only update the output head
-        u_loss = F.mse_loss(u_pred, targ_u.detach())  # detach, just in case
-        metrics['v_fb_mean'].append(v_q.mean())
-        metrics['u_fb_mean'].append(u_pred.mean())
-        metrics['u_loss'].append(u_loss)
-
-        self.u_opt.zero_grad()
-        u_loss.backward(retain_graph=True)
-        self.u_opt.step()
-
-        # Monitoring uncertainty values with features evaluated at other actions
-        if iters_so_far % self.hps.eval_frequency == 0:
-            # Note, we usually dump the metrics even if it's not an eval round (legibility),
-            # but this bit it too computationally expensive
-            with torch.no_grad():
-                # Compute the entities of interest with the action in phi sampled uniformly
-                action_uniform = torch.Tensor(self.hps.batch_size, self.ac_dim).uniform_(-self.max_ac,
-                                                                                         self.max_ac).to(self.device)
-                _new_phi_uniform = self.crit.phi(state, action_uniform).unsqueeze(-1)
-                _new_phi_t_uniform = torch.transpose(_new_phi_uniform, -1, -2)
-                v_uniform = torch.bmm(torch.bmm(_new_phi_t_uniform,
-                                                inflated_precision),
-                                      _new_phi_uniform).squeeze(-1)
-                # Keep in the 'no_grad' context, this is just for monitoring
-                u_uniform = self.crit.wrap_with_u_head(self.crit.phi(state, action_uniform).detach()).mean()
-                metrics['v_fu_mean'].append(v_uniform.mean())
-                metrics['u_fu_mean'].append(u_uniform.mean())
-
-        # Update the global uncertainty matrix (sigma in UBE, the covariance matrix) according to equation 14 in UBE
-        # Computations done without the batch dimension (non-batchable iterative process)
-        n = int(np.clip(self.hps.ptso_num_mat_updates_per_iter, 1, self.hps.batch_size))
-        # Note, pick an n << batch_size to save compute time
-        # Note, we adapt the global precision estimate with actions from the actor, not from the behavioral policy
-        with torch.no_grad():
-            for i in range(n):
-                denom = (torch.matmul(torch.matmul(_new_phi_t[i, ...],
-                                                   self.precision),
-                                      _new_phi[i, ...])
-                         + 1.).squeeze()  # scalar
-                numer = torch.matmul(torch.matmul(torch.matmul(self.precision,
-                                                               _new_phi[i, ...]),
-                                                  _new_phi_t[i, ...]),
-                                     self.precision)
-                self.precision -= (numer / denom)
-
+        # Update the target net
         if iters_so_far % self.hps.crit_targ_update_freq == 0:
             self.update_target_net(iters_so_far)
 
         # Update the Monte-Carlo critic
         rets = torch.Tensor(batch['rets']).to(self.device)
         mc_crit_loss = F.mse_loss(self.mc_crit.QZ(state, action), rets)
-
         self.mc_crit_opt.zero_grad()
         mc_crit_loss.backward()
         self.mc_crit_opt.step()
-
-        # Log the Monte-Carlo Q estimate at the state and action from the minibatch
-        mc_q_from_behav = self.mc_crit.QZ(state, action)
-        metrics['mcq_fb_mean'].append(mc_q_from_behav.mean())
-        metrics['q_fb_mean'].append(q.mean())
-        metrics['q_fb_std'].append(q.std())
-        metrics['q_fb_min'].append(q.min())
-        metrics['q_fb_max'].append(q.max())
 
         # Log the gap as defined in eq 10 of the CQL paper to monitor the gap-expanding property of CQL
         rand_ac = torch.Tensor(
@@ -937,14 +776,9 @@ class PTSOAgent(object):
         # Actor loss
         if iters_so_far >= self.hps.warm_start:
             # Use offline RL loss
-
-            # Log the Monte-Carlo Q estimate at the state from the minibatch and predicted action
-            mc_q_from_actr = self.mc_crit.QZ(state, action_from_actr)
-            metrics['mcq_fa_mean'].append(mc_q_from_actr.mean())
-
-            # For monitoring purposes, evaluate Q at the agent's action
-            # Even if unused by the selected loss thereafter, it is worth the evaluation cost
             q_from_actr = self.crit.QZ(state, action_from_actr)
+            # Note: for monitoring purposes, evaluate Q at the agent's action
+            # even if unused by the selected loss thereafter, it is worth the evaluation cost.
             if self.hps.use_c51:
                 q_from_actr = q_from_actr.matmul(self.c51_supp).unsqueeze(-1)
             elif self.hps.use_qr:
@@ -952,22 +786,8 @@ class PTSOAgent(object):
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
                 q_from_actr = torch.min(q_from_actr, twin_q_from_actr)
-            metrics['q_fa_mean'].append(q_from_actr.mean())
-            metrics['q_fa_std'].append(q_from_actr.std())
-            metrics['q_fa_min'].append(q_from_actr.min())
-            metrics['q_fa_max'].append(q_from_actr.max())
-            # Same goes for the uncertainty
-            phi_from_actr = self.crit.phi(state, action_from_actr)
-            u_from_actr = self.crit.wrap_with_u_head(phi_from_actr).clamp(min=1e-8).sqrt()
             # Note, we clamp for the value to be non-negative, for the square-root to always be defined
             # We clip with an epsilon strictly greater than zero because of sqrt's derivative at zero
-            metrics['u_fa_mean'].append(u_from_actr.mean())
-            metrics['u_fa_std'].append(u_from_actr.std())
-            metrics['u_fa_min'].append(u_from_actr.min())
-            metrics['u_fa_max'].append(u_from_actr.max())
-            # # Sanity-check
-            # assert not u_from_actr.isnan().any()
-
             # Assemble base loss
             if self.hps.base_pi_loss in ['sac', 'cql']:
                 actr_loss = (self.alpha_ent * log_prob) - q_from_actr
@@ -1001,18 +821,7 @@ class PTSOAgent(object):
                 actr_loss = ((self.alpha_ent * log_prob) - self.actr.logp(state, action)).mean()
             else:
                 raise NotImplementedError("invalid base loss for policy improvement.")
-
-            # If opted in, add the uncertainty contribution in the policy improvement loss
-            if self.hps.ptso_u_scale_p_i > 0:
-
-                # Create an 'advantage-like' estimator for the uncertainty, the unexpected uncertainty
-                u_u_ac, _ = self.ac_factory(self.actr, state, U_ESTIM_SAMPLES)
-                u_u_from_actr = self.u_factory(self.crit, state, u_u_ac).detach()
-
-                actr_loss += (self.hps.ptso_u_scale_p_i *
-                              self.actr.logp(state, action_from_actr.detach()) *
-                              (u_from_actr - u_u_from_actr.max(dim=1).values).gt(0.).detach())
-
+            # Compute the mean
             actr_loss = actr_loss.mean()
         else:
             # Use behavioral cloning loss

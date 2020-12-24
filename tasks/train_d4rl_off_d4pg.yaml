@@ -45,9 +45,9 @@ ret_norm: false
 popart: false
 
 # TD3
-clipped_double: true
+clipped_double: false
 ensemble_q_lambda: 1.
-targ_actor_smoothing: true
+targ_actor_smoothing: false
 td3_std: 0.2
 td3_c: 0.5
 actor_update_delay: 2
@@ -61,7 +61,7 @@ unreal: false
 
 # Distributional RL
 use_c51: false
-use_qr: false
+use_qr: true
 c51_num_atoms: 21
 c51_vmin: -10.
 c51_vmax: 10.
