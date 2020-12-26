@@ -15,7 +15,7 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video
 
 
-BRAC_BEHAV_STEPS = 50_000  # note: this has nothing to do with 'warm-starting with behavioral cloning'
+BRAC_BEHAV_STEPS = 25_000  # note: this has nothing to do with 'warm-starting with behavioral cloning'
 
 
 def rollout_generator(env, agent, rollout_len, use_noise_process):
@@ -30,7 +30,7 @@ def rollout_generator(env, agent, rollout_len, use_noise_process):
     while True:
 
         # Predict action
-        ac = agent.predict(ob, apply_noise=True, max_q=None)
+        ac = agent.predict(ob, apply_noise=True, which='main')
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
         ac = np.clip(ac, env.action_space.low, env.action_space.high)

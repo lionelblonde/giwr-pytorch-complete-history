@@ -14,6 +14,7 @@ from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuf
 from agents.nets import perception_stack_parser, ActorPhi, ActorVAE, Critic
 
 
+CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 
 
@@ -179,8 +180,9 @@ class BCQAgent(object):
         assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the observation normalizer
-        self.rms_obs.update(transition['obs0'])
+        if self.hps.obs_norm:
+            # Update the observation normalizer
+            self.rms_obs.update(transition['obs0'])
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -213,21 +215,36 @@ class BCQAgent(object):
         if apply_noise:
             _vae = self.vae
         else:
-            if which == 'maxq':
-                _vae = self.maxq_eval_vae
-            if which == 'cwpq':
-                _vae = self.cwpq_eval_vae
+            if which in ['maxq', 'cwpq']:
+
+                if which == 'maxq':
+                    _vae = self.maxq_eval_vae
+                else:  # which == 'cwpq'
+                    _vae = self.cwpq_eval_vae
+
+                ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
+                ac_from_vae = _vae.decode(ob)
+                ac = self.actr.act(ob, ac_from_vae)
+                # Among the 100 values, take the one with the highest Q value (or Z value)
+                q_value = self.crit.QZ(ob, ac).mean(dim=1)
+
+                if which == 'maxq':
+                    index = q_value.argmax(0)
+                else:  # which == 'cwpq'
+                    adv_value = q_value - q_value.mean(dim=0)
+                    weight = F.softplus(adv_value,
+                                        beta=1. / CWPQ_TEMP,
+                                        threshold=20.).clamp(min=0.01, max=1e12)
+                    index = torch.multinomial(weight, num_samples=1, generator=_vae.gen).squeeze()
+
+                ac = ac[index]
+
             else:  # which == 'main'
                 _vae = self.main_eval_vae
+                ob = torch.Tensor(ob[None]).to(self.device)
+                ac_from_vae = _vae.decode(ob)
+                ac = self.actr.act(ob, ac_from_vae)
 
-        ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
-        ac_from_vae = _vae.decode(ob)
-        # Predict the action
-        ac = self.actr.act(ob, ac_from_vae)
-        # Among the 100 values, take the one with the highest Q value (or Z value)
-        q_value = self.crit.QZ(ob, ac).mean(dim=1)  # mean in case we use a distributional critic
-        index = q_value.argmax(0)
-        ac = ac[index]
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
         # Clip the action

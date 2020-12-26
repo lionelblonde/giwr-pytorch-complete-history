@@ -143,7 +143,7 @@ class BEARAgent(object):
     @property
     def alpha(self):
         if self.hps.use_adaptive_alpha:
-            return self.log_alpha.exp()
+            return self.log_alpha.clamp(*LOG_ALPHA_CLAMPS).exp()
         else:
             return self.hps.init_temp_log_alpha
 
@@ -196,8 +196,9 @@ class BEARAgent(object):
         assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the observation normalizer
-        self.rms_obs.update(transition['obs0'])
+        if self.hps.obs_norm:
+            # Update the observation normalizer
+            self.rms_obs.update(transition['obs0'])
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -227,7 +228,6 @@ class BEARAgent(object):
         and optionaly compute and return the associated QZ value.
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
         """
-        # Predict the action
         if apply_noise:
             _actr = self.actr
             ob = torch.Tensor(ob[None]).to(self.device)
@@ -251,7 +251,7 @@ class BEARAgent(object):
                     adv_value = q_value - q_value.mean(dim=0)
                     weight = F.softplus(adv_value,
                                         beta=1. / CWPQ_TEMP,
-                                        threshold=20.).clamp(min=0.01)
+                                        threshold=20.).clamp(min=0.01, max=1e12)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -344,12 +344,17 @@ class BEARAgent(object):
             else:
                 raise NotImplementedError("invalid kernel.")
 
-            # Only update the policy after a certain number of iteration (BEAR codebase: 40000)
-            start_using_q = torch.tensor(float(iters_so_far >= self.hps.warm_start)).to(self.device)
-
             # Actor loss
-            actr_loss = ((-q_from_actr * start_using_q.detach()) +
-                         (self.alpha * (mmd_loss - self.hps.bear_mmd_epsilon))).mean()
+            if iters_so_far >= self.hps.warm_start:
+                if self.hps.use_adaptive_alpha:
+                    actr_loss = (-q_from_actr + (self.alpha * (mmd_loss - self.hps.bear_mmd_epsilon))).mean()
+                else:
+                    actr_loss = (-q_from_actr + (100. * mmd_loss)).mean()
+            else:
+                if self.hps.use_adaptive_alpha:
+                    actr_loss = (self.alpha * (mmd_loss - self.hps.bear_mmd_epsilon)).mean()
+                else:
+                    actr_loss = 100. * mmd_loss.mean()
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
@@ -366,10 +371,10 @@ class BEARAgent(object):
             logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
             if self.hps.use_adaptive_alpha:
+                alpha_loss = -(self.alpha * (mmd_loss - self.hps.bear_mmd_epsilon).detach()).mean()
                 self.log_alpha_opt.zero_grad()
-                (-actr_loss).backward()
+                alpha_loss.backward()
                 self.log_alpha_opt.step()
-                self.log_alpha.data.clamp_(*LOG_ALPHA_CLAMPS)
 
             logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
 

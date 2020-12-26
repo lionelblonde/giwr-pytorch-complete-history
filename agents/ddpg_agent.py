@@ -121,11 +121,11 @@ class DDPGAgent(object):
             'obs0': (self.ob_dim,),
             'obs1': (self.ob_dim,),
             'acs': (self.ac_dim,),
-            'acs1': (self.ac_dim,),  # SARSA
             'rews': (1,),
             'dones1': (1,),
-            'rets': (1,),
         }
+        if self.hps.offline:
+            shapes.update({'acs1': (self.ac_dim,), 'rets': (1,)})
         self.replay_buffer = self.setup_replay_buffer(shapes)
 
         if self.hps.offline:
@@ -239,8 +239,9 @@ class DDPGAgent(object):
         assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the observation normalizer
-        self.rms_obs.update(transition['obs0'])
+        if self.hps.obs_norm:
+            # Update the observation normalizer
+            self.rms_obs.update(transition['obs0'])
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -256,6 +257,7 @@ class DDPGAgent(object):
                 self.hps.gamma,
                 # _patcher,  # no need
                 None,
+                offline=self.hps.offline,
             )
         else:
             batch = self.replay_buffer.sample(
@@ -270,7 +272,6 @@ class DDPGAgent(object):
         and optionaly compute and return the associated QZ value.
         """
         ob = torch.Tensor(ob[None]).to(self.device)
-        # Predict the action
         if apply_noise:
             if apply_noise and self.param_noise is not None:
                 # Predict following a parameter-noise-perturbed actor

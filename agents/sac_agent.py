@@ -95,11 +95,11 @@ class SACAgent(object):
             'obs0': (self.ob_dim,),
             'obs1': (self.ob_dim,),
             'acs': (self.ac_dim,),
-            'acs1': (self.ac_dim,),  # SARSA
             'rews': (1,),
             'dones1': (1,),
-            'rets': (1,),
         }
+        if self.hps.offline:
+            shapes.update({'acs1': (self.ac_dim,), 'rets': (1,)})
         self.replay_buffer = self.setup_replay_buffer(shapes)
 
         if self.hps.offline:
@@ -191,8 +191,9 @@ class SACAgent(object):
         assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the observation normalizer
-        self.rms_obs.update(transition['obs0'])
+        if self.hps.obs_norm:
+            # Update the observation normalizer
+            self.rms_obs.update(transition['obs0'])
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -246,7 +247,7 @@ class SACAgent(object):
                     adv_value = q_value - q_value.mean(dim=0)
                     weight = F.softplus(adv_value,
                                         beta=1. / CWPQ_TEMP,
-                                        threshold=20.).clamp(min=0.01)
+                                        threshold=20.).clamp(min=0.01, max=1e12)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -287,7 +288,7 @@ class SACAgent(object):
         if update_actor:
 
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-            log_prob = self.actr.logp(state, action_from_actr)
+            log_prob = self.actr.logp(state, action_from_actr.detach())
             q_from_actr = self.crit.QZ(state, action_from_actr)
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
@@ -333,7 +334,7 @@ class SACAgent(object):
                        (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
 
         # Add the causal entropy regularization term
-        next_log_prob = self.actr.logp(next_state, next_action)
+        next_log_prob = self.actr.logp(next_state, next_action.detach())
         q_prime -= self.alpha * next_log_prob
 
         # Assemble the target

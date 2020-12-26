@@ -1,7 +1,7 @@
 meta:
   task: 'train'
   benchmark: 'd4rl'
-  algo: 'bear'
+  algo: 'ddpg'
 
 resources:
   cuda: true
@@ -19,7 +19,7 @@ eval_steps_per_iter: 50
 eval_frequency: 5e3
 
 # Model
-perception_stack: '"256 256, 256 256, 750 750"'
+perception_stack: '"400 300, 400 300"'
 layer_norm: true
 
 # Optimization
@@ -30,24 +30,27 @@ clip_norm: 0.
 wd_scale: 0.
 
 # Algorithm
-batch_size: 256
+rollout_len: 2
+batch_size: 64
 gamma: 0.99
 mem_size: 2e6
+noise_type: '"adaptive-param_0.2, ou_0.2"'
+pn_adapt_frequency: 50
 polyak: 0.005
 targ_up_freq: 100
-n_step_returns: false
+n_step_returns: true
 lookahead: 10
 obs_norm: false
 ret_norm: false
 popart: false
 
 # TD3
-clipped_double: true
-ensemble_q_lambda: 0.75
+clipped_double: false
+ensemble_q_lambda: 1.
 targ_actor_smoothing: false
 td3_std: 0.2
 td3_c: 0.5
-actor_update_delay: 1
+actor_update_delay: 2
 
 # Prioritized replay
 prioritized_replay: false
@@ -58,7 +61,7 @@ unreal: false
 
 # Distributional RL
 use_c51: false
-use_qr: false
+use_qr: true
 c51_num_atoms: 21
 c51_vmin: -10.
 c51_vmax: 10.
@@ -66,13 +69,3 @@ num_tau: 200
 
 # Offline RL
 offline: true
-
-state_dependent_std: true
-behavior_lr: 3.0e-4
-use_adaptive_alpha: true
-log_alpha_lr: 3.0e-4
-init_temp_log_alpha: 100.
-warm_start: 40000
-bear_mmd_kernel: 'laplacian'
-bear_mmd_sigma: 20
-bear_mmd_epsilon: 0.05

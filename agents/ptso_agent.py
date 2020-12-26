@@ -26,7 +26,6 @@ CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
 RND_INNER_SCALE = 100.0
-AL_ALPHA = 0.9
 
 
 class PTSOAgent(object):
@@ -267,8 +266,9 @@ class PTSOAgent(object):
         assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the observation normalizer
-        self.rms_obs.update(transition['obs0'])
+        if self.hps.obs_norm:
+            # Update the observation normalizer
+            self.rms_obs.update(transition['obs0'])
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -329,7 +329,7 @@ class PTSOAgent(object):
                     adv_value = q_value - q_value.mean(dim=0)
                     weight = F.softplus(adv_value,
                                         beta=1. / CWPQ_TEMP,
-                                        threshold=20.).clamp(min=0.01)
+                                        threshold=20.).clamp(min=0.01, max=1e12)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -427,7 +427,7 @@ class PTSOAgent(object):
             self.ra_opt.step()
 
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-        log_prob = self.actr.logp(state, action_from_actr)
+        log_prob = self.actr.logp(state, action_from_actr.detach())
 
         if self.hps.base_next_action == 'beta':  # sarsa
             next_action = torch.Tensor(batch['acs1']).to(self.device)
@@ -566,7 +566,7 @@ class PTSOAgent(object):
 
             if not self.hps.cql_deterministic_backup:
                 # Add the causal entropy regularization term
-                next_log_prob = self.actr.logp(next_state, next_action)
+                next_log_prob = self.actr.logp(next_state, next_action.detach())
                 q_prime -= self.alpha_ent * next_log_prob
 
             # Assemble the target
@@ -586,9 +586,9 @@ class PTSOAgent(object):
                 pal_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
                 pal_adv = pal_q - pal_emp_adv_from_actr
             if self.hps.targ_q_bonus == 'al':
-                targ_q += AL_ALPHA * al_adv
+                targ_q += self.hps.scale_targ_q_bonus * al_adv
             if self.hps.targ_q_bonus == 'pal':
-                targ_q += AL_ALPHA * torch.max(al_adv, pal_adv)
+                targ_q += self.hps.scale_targ_q_bonus * torch.max(al_adv, pal_adv)
 
             targ_q = self.norm_rets(targ_q).detach()
 

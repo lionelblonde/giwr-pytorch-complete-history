@@ -211,8 +211,9 @@ class CQLAgent(object):
         assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the observation normalizer
-        self.rms_obs.update(transition['obs0'])
+        if self.hps.obs_norm:
+            # Update the observation normalizer
+            self.rms_obs.update(transition['obs0'])
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -266,7 +267,7 @@ class CQLAgent(object):
                     adv_value = q_value - q_value.mean(dim=0)
                     weight = F.softplus(adv_value,
                                         beta=1. / CWPQ_TEMP,
-                                        threshold=20.).clamp(min=0.01)
+                                        threshold=20.).clamp(min=0.01, max=1e12)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -319,7 +320,7 @@ class CQLAgent(object):
             td_len = torch.ones_like(done).to(self.device)
 
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-        log_prob = self.actr.logp(state, action_from_actr)
+        log_prob = self.actr.logp(state, action_from_actr.detach())
 
         # Only update the policy after a certain number of iteration (CQL codebase: 20000)
         # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
@@ -377,7 +378,7 @@ class CQLAgent(object):
 
         if not self.hps.cql_deterministic_backup:
             # Add the causal entropy regularization term
-            next_log_prob = self.actr.logp(next_state, next_action)
+            next_log_prob = self.actr.logp(next_state, next_action.detach())
             q_prime -= self.alpha_ent * next_log_prob
 
         # Assemble the target

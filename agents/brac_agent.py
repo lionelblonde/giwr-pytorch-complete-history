@@ -219,8 +219,9 @@ class BRACAgent(object):
         assert not self.hps.offline, "this method should not be used in this setting."
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the observation normalizer
-        self.rms_obs.update(transition['obs0'])
+        if self.hps.obs_norm:
+            # Update the observation normalizer
+            self.rms_obs.update(transition['obs0'])
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -274,7 +275,7 @@ class BRACAgent(object):
                     adv_value = q_value - q_value.mean(dim=0)
                     weight = F.softplus(adv_value,
                                         beta=1. / CWPQ_TEMP,
-                                        threshold=20.).clamp(min=0.01)
+                                        threshold=20.).clamp(min=0.01, max=1e12)
                     index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
@@ -302,9 +303,7 @@ class BRACAgent(object):
 
         for _ in range(BC_TRAINING_STEPS_PER_BATCH):
             actr_b_loss = -self.actr_b.logp(state, action).mean()
-            action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=False)
-            ac_gap = F.mse_loss(action_from_actr_b, action)
-            bc_loss_deque.append(ac_gap.detach().cpu().numpy())
+            bc_loss_deque.append(actr_b_loss.exp().detach().cpu().numpy())
 
             self.actr_b_opt.zero_grad()
             actr_b_loss.backward()
@@ -340,7 +339,7 @@ class BRACAgent(object):
 
             # Train the actor
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-            log_prob = self.actr.logp(state, action_from_actr)
+            log_prob = self.actr.logp(state, action_from_actr.detach())
             q_from_actr = self.crit.QZ(state, action_from_actr)
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
@@ -356,7 +355,7 @@ class BRACAgent(object):
             # log_prob_aa is self.actr.logp(state, action_from_actr) (already computed: log_prob)
             # log_prob_aa is self.actr.logp(state, action_from_actr_b) (to be computed)
             action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=True)
-            div = (log_prob - self.actr.logp(state, action_from_actr_b)).mean()
+            div = (log_prob - self.actr.logp(state, action_from_actr_b.detach())).mean()
 
             # Only update the policy after a certain number of iteration (BRAC codebase: 20000)
             start_using_q = torch.tensor(float(iters_so_far >= self.hps.warm_start)).to(self.device)
@@ -412,13 +411,13 @@ class BRACAgent(object):
         q_prime = q_prime.reshape(self.hps.batch_size, -1).max(1)[0].reshape(-1, 1)
 
         # Add the causal entropy regularization term
-        next_log_prob = self.actr.logp(next_state, next_action)
+        next_log_prob = self.actr.logp(next_state, next_action.detach())
         q_prime -= self.alpha_ent * next_log_prob
 
         if self.hps.brac_value_kl_pen:
             # Add value penalty regularizater
             next_action_from_actr_b = float(self.max_ac) * self.actr_b.sample(next_state, sg=True)
-            next_log_prob_from_actr_b = self.actr.logp(next_state, next_action_from_actr_b)
+            next_log_prob_from_actr_b = self.actr.logp(next_state, next_action_from_actr_b.detach())
             div = (next_log_prob - next_log_prob_from_actr_b).mean()
             q_prime -= self.alpha_div * div
 

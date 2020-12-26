@@ -78,7 +78,7 @@ class ReplayBuffer(object):
 
         return transitions
 
-    def lookahead(self, transitions, n, gamma, patcher):
+    def lookahead(self, transitions, n, gamma, patcher, offline):
         """Perform n-step TD lookahead estimations starting from every transition"""
         assert 0 <= gamma <= 1
 
@@ -113,7 +113,8 @@ class ReplayBuffer(object):
             la_batch['obs0'].append(la_transitions['obs0'][0])
             la_batch['obs1'].append(la_transitions['obs1'][td_len - 1])
             la_batch['acs'].append(la_transitions['acs'][0])
-            la_batch['acs1'].append(la_transitions['acs1'][td_len - 1])
+            if offline:
+                la_batch['acs1'].append(la_transitions['acs1'][td_len - 1])
             la_batch['rews'].append(la_discounted_sum_n_rews)
             la_batch['dones1'].append(la_is_trimmed)
             la_batch['td_len'].append(td_len)
@@ -146,20 +147,21 @@ class ReplayBuffer(object):
             # logger.info("\n\n")
 
         la_batch['idxs'] = transitions['idxs']
-        la_batch['rets'] = transitions['rets']
+        if offline:
+            la_batch['rets'] = transitions['rets']
 
         # Wrap every value with `array_min2d`
         la_batch = {k: array_min2d(v) for k, v in la_batch.items()}
         return la_batch
 
-    def lookahead_sample(self, batch_size, n, gamma, patcher):
+    def lookahead_sample(self, batch_size, n, gamma, patcher, offline=False):
         """Sample from the replay buffer.
         This function is for n-step TD backups, where n > 1
         """
         # Sample a batch of transitions
         transitions = self.sample(batch_size, patcher)
         # Expand each transition with a n-step TD lookahead
-        return self.lookahead(transitions, n, gamma, patcher)
+        return self.lookahead(transitions, n, gamma, patcher, offline)
 
     def append(self, transition):
         """Add transition to the replay buffer"""

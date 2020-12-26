@@ -406,7 +406,7 @@ if __name__ == '__main__':
 
     # Make the paths absolute
     _args.root = os.path.dirname(os.path.abspath(__file__))
-    for k in ['checkpoints', 'logs', 'videos']:
+    for k in ['checkpoints', 'logs', 'videos', 'replays']:
         new_k = "{}_dir".format(k[:-1])
         vars(_args)[new_k] = os.path.join(_args.root, 'data', k)
 
