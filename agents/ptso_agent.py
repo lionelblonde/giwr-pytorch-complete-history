@@ -427,7 +427,7 @@ class PTSOAgent(object):
             self.ra_opt.step()
 
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-        log_prob = self.actr.logp(state, action_from_actr.detach())
+        log_prob = self.actr.logp(state, action_from_actr)
 
         if self.hps.base_next_action == 'beta':  # sarsa
             next_action = torch.Tensor(batch['acs1']).to(self.device)
@@ -566,7 +566,7 @@ class PTSOAgent(object):
 
             if not self.hps.cql_deterministic_backup:
                 # Add the causal entropy regularization term
-                next_log_prob = self.actr.logp(next_state, next_action.detach())
+                next_log_prob = self.actr.logp(next_state, next_action)
                 q_prime -= self.alpha_ent * next_log_prob
 
             # Assemble the target

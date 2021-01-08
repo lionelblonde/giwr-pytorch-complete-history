@@ -89,7 +89,7 @@ ptso_ra_grad_pen_scale_a: 0.
 ptso_ra_grad_pen_targ_s: 0.
 ptso_ra_grad_pen_targ_a: 0.
 base_next_action: 'theta'
-base_pe_loss: 'cql_2'
+base_pe_loss: 'pure_td'
 base_pi_loss: 'crr_exp'
-targ_q_bonus: 'al'
+targ_q_bonus: 'none'
 scale_targ_q_bonus: 0.9

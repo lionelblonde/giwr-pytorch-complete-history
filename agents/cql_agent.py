@@ -320,7 +320,7 @@ class CQLAgent(object):
             td_len = torch.ones_like(done).to(self.device)
 
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-        log_prob = self.actr.logp(state, action_from_actr.detach())
+        log_prob = self.actr.logp(state, action_from_actr)
 
         # Only update the policy after a certain number of iteration (CQL codebase: 20000)
         # Note, as opposed to BEAR and BRAC, after the warm start, the BC loss is not used anymore
@@ -378,7 +378,7 @@ class CQLAgent(object):
 
         if not self.hps.cql_deterministic_backup:
             # Add the causal entropy regularization term
-            next_log_prob = self.actr.logp(next_state, next_action.detach())
+            next_log_prob = self.actr.logp(next_state, next_action)
             q_prime -= self.alpha_ent * next_log_prob
 
         # Assemble the target

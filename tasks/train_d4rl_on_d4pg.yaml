@@ -62,9 +62,9 @@ unreal: false
 # Distributional RL
 use_c51: false
 use_qr: true
-c51_num_atoms: 21
-c51_vmin: -10.
-c51_vmax: 10.
+c51_num_atoms: 51
+c51_vmin: -150.
+c51_vmax: 150.
 num_tau: 200
 
 # Offline RL

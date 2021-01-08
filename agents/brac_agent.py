@@ -166,7 +166,7 @@ class BRACAgent(object):
     @property
     def alpha_div(self):
         if self.hps.brac_use_adaptive_alpha_div:
-            return self.log_alpha_div.exp().data.clamp_(*ALPHA_DIV_CLAMPS)
+            return self.log_alpha_div.exp().clamp(*ALPHA_DIV_CLAMPS)
         else:
             return self.hps.brac_init_temp_log_alpha_div
 
@@ -339,7 +339,7 @@ class BRACAgent(object):
 
             # Train the actor
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-            log_prob = self.actr.logp(state, action_from_actr.detach())
+            log_prob = self.actr.logp(state, action_from_actr)
             q_from_actr = self.crit.QZ(state, action_from_actr)
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
@@ -349,21 +349,20 @@ class BRACAgent(object):
 
             # Compute the divergence between the actor and the behavior policy
             # Note, we only care about the KL divergence: best reported results in BRAC
-
-            # In BRAC, the KL considered is KL(policy || behavior policy), so we only need to compute the
-            # log prob of the policy (a_) over samples from the policy (_a) and the behavior policy (_b)
-            # log_prob_aa is self.actr.logp(state, action_from_actr) (already computed: log_prob)
-            # log_prob_aa is self.actr.logp(state, action_from_actr_b) (to be computed)
-            action_from_actr_b = float(self.max_ac) * self.actr_b.sample(state, sg=True)
-            div = (log_prob - self.actr.logp(state, action_from_actr_b.detach())).mean()
-
-            # Only update the policy after a certain number of iteration (BRAC codebase: 20000)
-            start_using_q = torch.tensor(float(iters_so_far >= self.hps.warm_start)).to(self.device)
+            # In BRAC, the KL considered is KL(policy || behavior policy)
+            log_prob_1 = self.actr.logp(state, action_from_actr)
+            log_prob_2 = self.actr_b.logp(state, action_from_actr)
+            div = log_prob_1 - log_prob_2
 
             # Actor loss
-            actr_loss = ((-q_from_actr * start_using_q.detach()) +
-                         (self.alpha_div * div) +
-                         (self.alpha_ent * log_prob)).mean()
+            # Only update the policy after a certain number of iteration (BRAC codebase: 20000)
+            if iters_so_far >= self.hps.warm_start:
+                actr_loss = ((self.alpha_ent * log_prob) - q_from_actr).mean()
+                actr_loss += self.alpha_div * div.mean()
+            else:
+                actr_loss = (self.alpha_ent * log_prob).mean()
+                actr_loss += (self.alpha_div * div).mean()
+
             metrics['actr_loss'].append(actr_loss)
 
             self.actr_opt.zero_grad()
@@ -411,14 +410,14 @@ class BRACAgent(object):
         q_prime = q_prime.reshape(self.hps.batch_size, -1).max(1)[0].reshape(-1, 1)
 
         # Add the causal entropy regularization term
-        next_log_prob = self.actr.logp(next_state, next_action.detach())
+        next_log_prob = self.actr.logp(next_state, next_action)
         q_prime -= self.alpha_ent * next_log_prob
 
         if self.hps.brac_value_kl_pen:
             # Add value penalty regularizater
-            next_action_from_actr_b = float(self.max_ac) * self.actr_b.sample(next_state, sg=True)
-            next_log_prob_from_actr_b = self.actr.logp(next_state, next_action_from_actr_b.detach())
-            div = (next_log_prob - next_log_prob_from_actr_b).mean()
+            next_log_prob_1 = self.actr.logp(next_state, next_action)
+            next_log_prob_2 = self.actr_b.logp(next_state, next_action)
+            div = next_log_prob_1 - next_log_prob_2
             q_prime -= self.alpha_div * div
 
         # Assemble the target
