@@ -411,12 +411,11 @@ class PTSOAgent(object):
 
         if self.hps.ptso_use_reward_averager:
             # Update the reward averager
-            ra_loss = F.mse_loss(self.reward_averager(state, action, next_state), reward)
+            ra_loss = F.mse_loss(self.reward_averager(state, action), reward)
             ra_grad_pen_s, ra_grad_pen_a, ra_grad_pen_ns, _, _, _ = self.grad_pen(
                 fa=self.reward_averager,
                 state=state,
                 action=action,
-                next_state=next_state,
                 targ_gn_s=self.hps.ptso_ra_grad_pen_targ_s,
                 targ_gn_a=self.hps.ptso_ra_grad_pen_targ_a,
             )
@@ -580,11 +579,21 @@ class PTSOAgent(object):
                 al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
                 al_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
                 al_adv = al_q - al_emp_adv_from_actr
+                if self.hps.clipped_double:
+                    twin_al_q = self.targ_twin.QZ(state, action)
+                    twin_al_emp_adv_from_actr = self.q_factory(self.targ_twin, state, al_emp_adv_ac).mean(dim=1)
+                    twin_al_adv = twin_al_q - twin_al_emp_adv_from_actr
+                    al_adv = torch.min(al_adv, twin_al_adv)
             if self.hps.targ_q_bonus == 'pal':
                 pal_q = self.targ_crit.QZ(next_state, next_action)
                 pal_emp_adv_ac, _ = self.ac_factory(self.actr, next_state, ADV_ESTIM_SAMPLES)
                 pal_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
                 pal_adv = pal_q - pal_emp_adv_from_actr
+                if self.hps.clipped_double:
+                    twin_pal_q = self.targ_twin.QZ(state, action)
+                    twin_pal_emp_adv_from_actr = self.q_factory(self.targ_twin, state, pal_emp_adv_ac).mean(dim=1)
+                    twin_pal_adv = twin_pal_q - twin_pal_emp_adv_from_actr
+                    pal_adv = torch.min(pal_adv, twin_pal_adv)
             if self.hps.targ_q_bonus == 'al':
                 targ_q += self.hps.scale_targ_q_bonus * al_adv
             if self.hps.targ_q_bonus == 'pal':
@@ -855,24 +864,18 @@ class PTSOAgent(object):
 
         return metrics, lrnows
 
-    def grad_pen(self, fa, state, action, targ_gn_s, targ_gn_a, std=10.0, next_state=None):
+    def grad_pen(self, fa, state, action, targ_gn_s, targ_gn_a, std=10.0):
         """Define the gradient penalty regularizer"""
         # Create the states to apply the contraint on
         eps_s = state.clone().detach().data.normal_(0, std)
         zeta_state = state + eps_s
         zeta_state.requires_grad = True
-        if next_state is not None:
-            eps_ns = next_state.clone().detach().data.normal_(0, std)
-            zeta_next_state = next_state + eps_ns
-            zeta_next_state.requires_grad = True
         # Create the actions to apply the contraint on
         eps_a = action.clone().detach().data.normal_(0, std)
         zeta_action = action + eps_a
         zeta_action.requires_grad = True
         # Define the input(s) w.r.t. to take the gradient
         inputs = [zeta_state, zeta_action]
-        if next_state is not None:
-            inputs.append(zeta_next_state)
         # Create the operation of interest
         score = fa(*inputs)
         # Get the gradient of this operation with respect to its inputs
@@ -890,12 +893,7 @@ class PTSOAgent(object):
         grads_norm_a = list(grads)[1].norm(2, dim=-1)
         grad_pen_s = (grads_norm_s - targ_gn_s).pow(2).mean()
         grad_pen_a = (grads_norm_a - targ_gn_a).pow(2).mean()
-        if next_state is None:
-            return grad_pen_s, grad_pen_a, grads_norm_s, grads_norm_a
-        else:
-            grads_norm_ns = list(grads)[2].norm(2, dim=-1)
-            grad_pen_ns = (grads_norm_ns - targ_gn_s).pow(2).mean()  # same target as with state
-            return grad_pen_s, grad_pen_a, grad_pen_ns, grads_norm_s, grads_norm_a, grads_norm_ns
+        return grad_pen_s, grad_pen_a, grads_norm_s, grads_norm_a
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

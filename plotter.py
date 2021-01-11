@@ -119,6 +119,7 @@ def plot(args):
             data = pd.read_csv(fname,
                                skipinitialspace=True,
                                usecols=[args.xcolkey, args.ycolkey])
+            data.fillna(0.0, inplace=True)
             # Retrieve the desired columns from the data
             xcol = data[args.xcolkey].to_numpy()
             ycol = data[args.ycolkey].to_numpy()
