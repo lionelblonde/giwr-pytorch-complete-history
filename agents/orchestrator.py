@@ -382,12 +382,12 @@ def learn(args,
                     d['actr_losses'].append(metrics['actr_loss'])
                     d['crit_losses'].append(metrics['crit_loss'])
                     if iters_so_far >= agent.hps.warm_start:
-                        if args.algo.split('_')[0] == 'ptso':
+                        if args.algo.split('_')[0] == 'bcp':
                             if agent.hps.base_pi_loss == 'crr_exp':
                                 d['is_crr_adv_clipped_sum'].append(metrics['is_crr_adv_clipped_sum'])
                             d['alpha_pri'].append(metrics['alpha_pri'])
                             d['gap'].append(metrics['gap'])
-                            if (agent.hps.ptso_use_rnd_monitoring or
+                            if (agent.hps.use_rnd_monitoring or
                                     agent.hps.base_pe_loss in ['htg_1', 'htg_2'] or
                                     agent.hps.base_next_action == 'beta_theta_max_rnd'):
                                 d['rnd_score'].append(metrics['rnd_score'])
@@ -415,7 +415,7 @@ def learn(args,
                     d['main_eval_env_ret'].append(main_eval_ep['ep_env_ret'])
                     d['maxq_eval_env_ret'].append(maxq_eval_ep['ep_env_ret'])
                     d['cwpq_eval_env_ret'].append(cwpq_eval_ep['ep_env_ret'])
-                    if args.algo.split('_')[0] == 'ptso':
+                    if args.algo.split('_')[0] == 'bcp':
                         d['eval_q'].append(maxq_eval_ep['q'])
                         d['eval_mcq'].append(maxq_eval_ep['mcq'])
 
@@ -435,12 +435,12 @@ def learn(args,
             logger.record_tabular(_str, step)
 
             if iters_so_far - 1 >= agent.hps.warm_start:
-                if args.algo.split('_')[0] == 'ptso':
+                if args.algo.split('_')[0] == 'bcp':
                     if agent.hps.base_pi_loss == 'crr_exp':
                         logger.record_tabular('is_crr_adv_clipped_sum', np.mean(d['is_crr_adv_clipped_sum']))
                     logger.record_tabular('alpha_pri', np.mean(d['alpha_pri']))
                     logger.record_tabular('gap', np.mean(d['gap']))
-                    if (agent.hps.ptso_use_rnd_monitoring or
+                    if (agent.hps.use_rnd_monitoring or
                             agent.hps.base_pe_loss in ['htg_1', 'htg_2'] or
                             agent.hps.base_next_action == 'beta_theta_max_rnd'):
                         logger.record_tabular('rnd_score', np.mean(d['rnd_score']))
@@ -450,7 +450,7 @@ def learn(args,
             logger.record_tabular('main_eval_env_ret', np.mean(d['main_eval_env_ret']))
             logger.record_tabular('maxq_eval_env_ret', np.mean(d['maxq_eval_env_ret']))
             logger.record_tabular('cwpq_eval_env_ret', np.mean(d['cwpq_eval_env_ret']))
-            if args.algo.split('_')[0] == 'ptso':
+            if args.algo.split('_')[0] == 'bcp':
                 logger.record_tabular('eval_q', np.mean(d['eval_q']))
                 logger.record_tabular('eval_mcq', np.mean(d['eval_mcq']))
             logger.info("dumping stats in .csv file")
@@ -479,14 +479,14 @@ def learn(args,
                 wandb.log({'twin_loss': np.mean(d['twin_losses'])},
                           step=step)
             if iters_so_far - 1 >= agent.hps.warm_start:
-                if args.algo.split('_')[0] == 'ptso':
+                if args.algo.split('_')[0] == 'bcp':
                     if agent.hps.base_pi_loss == 'crr_exp':
                         wandb.log({'is_crr_adv_clipped_sum': np.mean(d['is_crr_adv_clipped_sum'])},
                                   step=step)
                     wandb.log({'alpha_pri': np.mean(d['alpha_pri']),
                                'gap': np.mean(d['gap'])},
                               step=step)
-                    if (agent.hps.ptso_use_rnd_monitoring or
+                    if (agent.hps.use_rnd_monitoring or
                             agent.hps.base_pe_loss in ['htg_1', 'htg_2'] or
                             agent.hps.base_next_action == 'beta_theta_max_rnd'):
                         wandb.log({'rnd_score': np.mean(d['rnd_score'])},
@@ -498,7 +498,7 @@ def learn(args,
                        'maxq_eval_env_ret': np.mean(d['maxq_eval_env_ret']),
                        'cwpq_eval_env_ret': np.mean(d['cwpq_eval_env_ret'])},
                       step=step)
-            if args.algo.split('_')[0] == 'ptso':
+            if args.algo.split('_')[0] == 'bcp':
                 wandb.log({'eval_q': np.mean(d['eval_q']),
                            'eval_mcq': np.mean(d['eval_mcq'])},
                           step=step)

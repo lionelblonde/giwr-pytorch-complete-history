@@ -21,14 +21,14 @@ from agents.rnd import RandomNetworkDistillation
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 CQL_TEMP = 1.0
 EPS_CE = 1e-6
-U_ESTIM_SAMPLES = 4
 CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
+ONE_SIDED_PEN = True
 RND_INNER_SCALE = 100.0
 
 
-class PTSOAgent(object):
+class BCPAgent(object):
 
     def __init__(self, env, device, hps, to_load_in_memory):
         self.env = env
@@ -188,15 +188,15 @@ class PTSOAgent(object):
             total_num_steps=self.hps.num_steps,
         )
 
-        if (self.hps.ptso_use_rnd_monitoring or
+        if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
                 self.hps.base_next_action == 'beta_theta_max_rnd'):
             # Create RND networks
             self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
 
-        if self.hps.ptso_use_reward_averager:
+        if self.hps.use_reward_averager:
             self.reward_averager = RewardAverager(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
-            self.ra_opt = torch.optim.Adam(self.reward_averager.parameters(), lr=self.hps.ptso_ra_lr)
+            self.ra_opt = torch.optim.Adam(self.reward_averager.parameters(), lr=self.hps.ra_lr)
 
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
@@ -272,16 +272,9 @@ class PTSOAgent(object):
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
-        # Create patcher if needed
-        _patcher = None
-        if self.hps.ptso_use_reward_averager:
-            logger.info("we'bout2patch")
 
-            def _patcher(x, y, z):
-                x = torch.Tensor(x).to(self.device)
-                y = torch.Tensor(y).to(self.device)
-                z = torch.Tensor(z).to(self.device)
-                return self.reward_averager(x, y, z).detach().cpu().numpy()  # redundant detach
+        # def _patcher(x, y, z):
+        #     return .detach().cpu().numpy()  # redundant detach
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -289,12 +282,14 @@ class PTSOAgent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
-                patcher=_patcher,
+                # _patcher,  # no need
+                None,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
-                patcher=_patcher,
+                # _patcher,  # no need
+                None,
             )
         return batch
 
@@ -400,7 +395,7 @@ class PTSOAgent(object):
         else:
             td_len = torch.ones_like(done).to(self.device)
 
-        if (self.hps.ptso_use_rnd_monitoring or
+        if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
                 self.hps.base_next_action == 'beta_theta_max_rnd'):
             # Update the RND network
@@ -409,21 +404,20 @@ class PTSOAgent(object):
             # Monitor associated rnd estimate
             metrics['rnd_score'].append(1.0 - torch.exp(-self.rnd.get_int_rew(state, action)))
 
-        if self.hps.ptso_use_reward_averager:
+        if self.hps.use_reward_averager:
             # Update the reward averager
-            ra_loss = F.mse_loss(self.reward_averager(state, action), reward)
-            ra_grad_pen_s, ra_grad_pen_a, ra_grad_pen_ns, _, _, _ = self.grad_pen(
+            ra_loss = F.smooth_l1_loss(self.reward_averager(state, action), reward)  # Huber loss
+            ra_grad_pen = self.grad_pen(
                 fa=self.reward_averager,
                 state=state,
                 action=action,
-                targ_gn_s=self.hps.ptso_ra_grad_pen_targ_s,
-                targ_gn_a=self.hps.ptso_ra_grad_pen_targ_a,
             )
-            ra_loss += self.hps.ptso_ra_grad_pen_scale_s * (0.5 * (ra_grad_pen_s + ra_grad_pen_ns))
-            ra_loss += self.hps.ptso_ra_grad_pen_scale_a * ra_grad_pen_a
+            ra_loss += self.hps.scale_ra_grad_pen * ra_grad_pen
             self.ra_opt.zero_grad()
             ra_loss.backward()
             self.ra_opt.step()
+            # Override the reward tensor
+            reward = self.reward_averager(state, action)
 
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
@@ -587,11 +581,11 @@ class PTSOAgent(object):
             if self.hps.targ_q_bonus == 'pal':
                 pal_q = self.targ_crit.QZ(next_state, next_action)
                 pal_emp_adv_ac, _ = self.ac_factory(self.actr, next_state, ADV_ESTIM_SAMPLES)
-                pal_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
+                pal_emp_adv_from_actr = self.q_factory(self.targ_crit, next_state, pal_emp_adv_ac).mean(dim=1)
                 pal_adv = pal_q - pal_emp_adv_from_actr
                 if self.hps.clipped_double:
-                    twin_pal_q = self.targ_twin.QZ(state, action)
-                    twin_pal_emp_adv_from_actr = self.q_factory(self.targ_twin, state, pal_emp_adv_ac).mean(dim=1)
+                    twin_pal_q = self.targ_twin.QZ(next_state, next_action)
+                    twin_pal_emp_adv_from_actr = self.q_factory(self.targ_twin, next_state, pal_emp_adv_ac).mean(dim=1)
                     twin_pal_adv = twin_pal_q - twin_pal_emp_adv_from_actr
                     pal_adv = torch.min(pal_adv, twin_pal_adv)
             if self.hps.targ_q_bonus == 'al':
@@ -864,7 +858,7 @@ class PTSOAgent(object):
 
         return metrics, lrnows
 
-    def grad_pen(self, fa, state, action, targ_gn_s, targ_gn_a, std=10.0):
+    def grad_pen(self, fa, state, action, std=10.0):
         """Define the gradient penalty regularizer"""
         # Create the states to apply the contraint on
         eps_s = state.clone().detach().data.normal_(0, std)
@@ -889,11 +883,16 @@ class PTSOAgent(object):
             allow_unused=False,
         )
         # Return the gradient penalties
-        grads_norm_s = list(grads)[0].norm(2, dim=-1)
-        grads_norm_a = list(grads)[1].norm(2, dim=-1)
-        grad_pen_s = (grads_norm_s - targ_gn_s).pow(2).mean()
-        grad_pen_a = (grads_norm_a - targ_gn_a).pow(2).mean()
-        return grad_pen_s, grad_pen_a, grads_norm_s, grads_norm_a
+        grads = torch.cat(list(grads), dim=-1)
+        grads_norm = grads.norm(2, dim=-1)
+        if ONE_SIDED_PEN:
+            # Penalize the gradient for having a norm GREATER than 1
+            _grad_pen = torch.max(torch.zeros_like(grads_norm), grads_norm - 1.).pow(2)
+        else:
+            # Penalize the gradient for having a norm LOWER OR GREATER than 1
+            _grad_pen = (grads_norm - 1.).pow(2)
+        grad_pen = _grad_pen.mean()
+        return grad_pen
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

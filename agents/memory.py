@@ -73,7 +73,6 @@ class ReplayBuffer(object):
             transitions['rews'] = patcher(
                 transitions['obs0'],
                 transitions['acs'],
-                transitions['obs1'],
             )
 
         return transitions
@@ -97,7 +96,6 @@ class ReplayBuffer(object):
                 la_transitions['rews'] = patcher(
                     la_transitions['obs0'],
                     la_transitions['acs'],
-                    la_transitions['obs1'],
                 )
             # Only keep data from the current episode, drop everything after episode reset, if any
             dones = la_transitions['dones1']
@@ -302,7 +300,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             w_transitions['rews'] = patcher(
                 w_transitions['obs0'],
                 w_transitions['acs'],
-                w_transitions['obs1'],
             )
 
         return w_transitions

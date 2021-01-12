@@ -242,7 +242,7 @@ class Spawner(object):
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri',
-                          'ptso_use_rnd_monitoring', 'ptso_use_reward_averager']
+                          'use_rnd_monitoring', 'use_reward_averager']
 
         if 'slurm' in self.args.deployment:
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -407,13 +407,10 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
 
-                'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
-                'ptso_use_reward_averager': self.config.get('ptso_use_reward_averager', False),
-                'ptso_ra_lr': self.config.get('ptso_ra_lr', 1e-3),
-                'ptso_ra_grad_pen_scale_s': self.config.get('ptso_ra_grad_pen_scale_s', 0.),
-                'ptso_ra_grad_pen_scale_a': self.config.get('ptso_ra_grad_pen_scale_a', 0.),
-                'ptso_ra_grad_pen_targ_s': self.config.get('ptso_ra_grad_pen_targ_s', 0.),
-                'ptso_ra_grad_pen_targ_a': self.config.get('ptso_ra_grad_pen_targ_a', 0.),
+                'use_rnd_monitoring': self.config.get('use_rnd_monitoring', False),
+                'use_reward_averager': self.config.get('use_reward_averager', False),
+                'ra_lr': self.config.get('ra_lr', 1e-3),
+                'scale_ra_grad_pen': self.config.get('scale_ra_grad_pen', 0.),
                 'base_next_action': self.config.get('base_next_action', 'theta'),
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
@@ -517,13 +514,10 @@ class Spawner(object):
                 'cql_min_q_weight': self.config.get('cql_min_q_weight', 5.),
                 'cql_state_inflate': self.config.get('cql_state_inflate', 10),
 
-                'ptso_use_rnd_monitoring': self.config.get('ptso_use_rnd_monitoring', False),
-                'ptso_use_reward_averager': self.config.get('ptso_use_reward_averager', False),
-                'ptso_ra_lr': self.config.get('ptso_ra_lr', 1e-3),
-                'ptso_ra_grad_pen_scale_s': self.config.get('ptso_ra_grad_pen_scale_s', 0.),
-                'ptso_ra_grad_pen_scale_a': self.config.get('ptso_ra_grad_pen_scale_a', 0.),
-                'ptso_ra_grad_pen_targ_s': self.config.get('ptso_ra_grad_pen_targ_s', 0.),
-                'ptso_ra_grad_pen_targ_a': self.config.get('ptso_ra_grad_pen_targ_a', 0.),
+                'use_rnd_monitoring': self.config.get('use_rnd_monitoring', False),
+                'use_reward_averager': self.config.get('use_reward_averager', False),
+                'ra_lr': self.config.get('ra_lr', 1e-3),
+                'scale_ra_grad_pen': self.config.get('scale_ra_grad_pen', 0.),
                 'base_next_action': self.config.get('base_next_action', 'theta'),
                 'base_pe_loss': self.config.get('base_pe_loss', 'cql_2'),
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),

@@ -19,7 +19,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)
     parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq',
                                                      'bear', 'brac', 'cql',
-                                                     'ptso'], default=None)
+                                                     'bcp', 'tspo'], default=None)
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
@@ -124,13 +124,10 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--cql_min_q_weight', type=float, default=5.)
     parser.add_argument('--cql_state_inflate', type=int, default=10)
 
-    boolean_flag(parser, 'ptso_use_rnd_monitoring', default=False)
-    boolean_flag(parser, 'ptso_use_reward_averager', default=False)
-    parser.add_argument('--ptso_ra_lr', type=float, default=1e-3)
-    parser.add_argument('--ptso_ra_grad_pen_scale_s', type=float, default=0.)
-    parser.add_argument('--ptso_ra_grad_pen_scale_a', type=float, default=0.)
-    parser.add_argument('--ptso_ra_grad_pen_targ_s', type=float, default=0.)
-    parser.add_argument('--ptso_ra_grad_pen_targ_a', type=float, default=0.)
+    boolean_flag(parser, 'use_rnd_monitoring', default=False)
+    boolean_flag(parser, 'use_reward_averager', default=False)
+    parser.add_argument('--ra_lr', type=float, default=1e-3)
+    parser.add_argument('--scale_ra_grad_pen', type=float, default=0.)
     parser.add_argument('--base_next_action', type=str, default=None)
     parser.add_argument('--base_pe_loss', type=str, default=None)
     parser.add_argument('--base_pi_loss', type=str, default=None)
