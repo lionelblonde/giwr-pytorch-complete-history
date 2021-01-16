@@ -12,7 +12,7 @@ from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from helpers.math_util import LRScheduler
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import perception_stack_parser, ActorPhi, TanhGaussActor, Critic, RewardAverager
+from agents.nets import perception_stack_parser, ActorPhi, ActorVAE, TanhGaussActor, Critic, RewardAverager
 
 
 CWPQ_TEMP = 10.0
@@ -67,11 +67,11 @@ class TSPOAgent(object):
         self.targ_actr = ActorPhi(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
 
-        self.bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        self.bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[3]).to(self.device)
         sync_with_root(self.actr)
-        self.main_eval_bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
-        self.maxq_eval_bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
-        self.cwpq_eval_bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        self.main_eval_bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[3]).to(self.device)
+        self.maxq_eval_bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[3]).to(self.device)
+        self.cwpq_eval_bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[3]).to(self.device)
         self.main_eval_bcp_actr.load_state_dict(self.bcp_actr.state_dict())
         self.maxq_eval_bcp_actr.load_state_dict(self.bcp_actr.state_dict())
         self.cwpq_eval_bcp_actr.load_state_dict(self.bcp_actr.state_dict())
@@ -85,6 +85,26 @@ class TSPOAgent(object):
             self.twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             self.targ_twin = Critic(self.env, self.hps, self.rms_obs, hidden_dims[1]).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
+
+        # Create VAE actor, "batch-constrained" by construction
+        self.vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        sync_with_root(self.vae)
+        self.main_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        self.maxq_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        self.cwpq_eval_vae = ActorVAE(self.env, self.hps, self.rms_obs, hidden_dims[2]).to(self.device)
+        self.main_eval_vae.load_state_dict(self.vae.state_dict())
+        self.maxq_eval_vae.load_state_dict(self.vae.state_dict())
+        self.cwpq_eval_vae.load_state_dict(self.vae.state_dict())
+        # Note: why do we create another VAE model for evaluation?
+        # because in the official implementation, BCQ uses the trained VAE to decode the state:
+        # https://github.com/sfujim/BCQ/blob/cc139e296ce117f9c8e2bfccf7e568a14baf8892/continuous_BCQ/BCQ.py#L127
+
+        # Create learnable Lagrangian multiplier
+        self.log_alpha_ent = torch.tensor(0.).to(self.device)
+        self.log_alpha_ent.requires_grad = True
+
+        # Set target entropy to minus action dimension
+        self.targ_ent = -self.ac_dim
 
         # Set up replay buffer
         shapes = {
@@ -114,7 +134,13 @@ class TSPOAgent(object):
                                              weight_decay=self.hps.wd_scale)
 
         self.bcp_actr_opt = torch.optim.Adam(self.bcp_actr.parameters(),
-                                             lr=self.hps.behavior_lr)
+                                             lr=self.hps.actor_lr)
+
+        self.vae_opt = torch.optim.Adam(self.vae.parameters(),
+                                        lr=self.hps.behavior_lr)
+
+        self.log_alpha_ent_opt = torch.optim.Adam([self.log_alpha_ent],
+                                                  lr=self.hps.actor_lr)
 
         # Set up lr scheduler
         self.actr_sched = LRScheduler(
@@ -134,6 +160,12 @@ class TSPOAgent(object):
             log_module_info(logger, 'twin', self.crit)
 
         log_module_info(logger, 'bcp_actr', self.bcp_actr)
+
+        log_module_info(logger, 'vae', self.vae)
+
+    @property
+    def alpha_ent(self):
+        return self.log_alpha_ent.exp()
 
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
@@ -217,18 +249,21 @@ class TSPOAgent(object):
         Note: keep 'apply_noise' even if unused, to preserve the unified signature.
         """
         if apply_noise:
-            _bcp_actr = self.bcp_actr
+            _actr = self.bcp_actr
+            _vae = self.vae
         else:
             if which in ['maxq', 'cwpq']:
 
                 if which == 'maxq':
-                    _bcp_actr = self.maxq_eval_bcp_actr
+                    _actr = self.maxq_eval_bcp_actr
+                    _vae = self.maxq_eval_vae
                 else:  # which == 'cwpq'
-                    _bcp_actr = self.cwpq_eval_bcp_actr
+                    _actr = self.cwpq_eval_bcp_actr
+                    _vae = self.cwpq_eval_vae
 
                 ob = torch.Tensor(ob[None]).to(self.device).repeat(100, 1)  # duplicate 100 times
-                ac_from_bcp_actr = float(self.max_ac) * _bcp_actr.sample(ob, sg=True)
-                ac = self.actr.act(ob, ac_from_bcp_actr)
+                ac_from_vae = _vae.decode(ob)
+                ac = self.actr.act(ob, ac_from_vae)
                 # Among the 100 values, take the one with the highest Q value (or Z value)
                 q_value = self.crit.QZ(ob, ac).mean(dim=1)
 
@@ -239,15 +274,15 @@ class TSPOAgent(object):
                     weight = F.softplus(adv_value,
                                         beta=1. / CWPQ_TEMP,
                                         threshold=20.).clamp(min=0.01, max=1e12)
-                    index = torch.multinomial(weight, num_samples=1, generator=_bcp_actr.gen).squeeze()
+                    index = torch.multinomial(weight, num_samples=1, generator=_actr.gen).squeeze()
 
                 ac = ac[index]
 
             else:  # which == 'main'
-                _bcp_actr = self.main_eval_bcp_actr
+                _actr = self.main_eval_bcp_actr
                 ob = torch.Tensor(ob[None]).to(self.device)
-                ac_from_bcp_actr = float(self.max_ac) * _bcp_actr.sample(ob, sg=True)
-                ac = self.actr.act(ob, ac_from_bcp_actr)
+                ac = float(self.max_ac) * _actr.mode(ob, sg=True)
+                # Gaussian, so mode == mean, can use either interchangeably
 
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
@@ -255,16 +290,16 @@ class TSPOAgent(object):
         ac = ac.clip(-self.max_ac, self.max_ac)
         return ac
 
-    def ac_factory_1(self, actr, ob, inflate):
+    def ac_factory_1(self, ob, inflate):
         _ob = ob.unsqueeze(1).repeat(1, inflate, 1).view(ob.shape[0] * inflate, ob.shape[1])
-        _ac = float(self.max_ac) * actr.sample(_ob, sg=False)
-        return _ac
+        _ac = self.vae.decode(_ob)
+        ac = self.actr.act(_ob, _ac)
+        return ac
 
-    def ac_factory_2(self, actr_1, actr_2, ob, inflate):
+    def ac_factory_2(self, ob, inflate):
         _ob = ob.unsqueeze(1).repeat(1, inflate, 1).view(ob.shape[0] * inflate, ob.shape[1])
-        _ac_1 = float(self.max_ac) * actr_1.sample(_ob, sg=False)
-        _ac_2 = actr_2.act(_ob, _ac_1)
-        return _ac_2
+        ac = float(self.max_ac) * self.bcp_actr.sample(_ob, sg=False)
+        return ac
 
     def q_factory(self, crit, ob, ac):
         ob_dim = ob.shape[0]
@@ -311,19 +346,21 @@ class TSPOAgent(object):
             # Override the reward tensor
             reward = self.reward_averager(state, action)
 
-        # Train the BCP actor
-        bcp_q = self.crit.QZ(state, action)
-        bcp_emp_adv_ac = self.ac_factory_1(self.bcp_actr, state, ADV_ESTIM_SAMPLES)
-        bcp_emp_adv_from_bcp_actr = self.q_factory(self.crit, state, bcp_emp_adv_ac).mean(dim=1)
-        bcp_adv = bcp_q - bcp_emp_adv_from_bcp_actr
-        bcp_adv = torch.exp(bcp_adv / BCP_TEMP).clamp(max=20.)
-        bcp_actr_loss = -self.bcp_actr.logp(state, action) * bcp_adv.detach()
-        bcp_actr_loss = bcp_actr_loss.mean()
+        # Calculate log-probability of the action predicted by the BCP actor
+        action_from_bcp_actr = float(self.max_ac) * self.bcp_actr.sample(state, sg=False)
+        log_prob = self.bcp_actr.logp(state, action_from_bcp_actr)
 
-        self.bcp_actr_opt.zero_grad()
-        bcp_actr_loss.backward()
-        average_gradients(self.bcp_actr, self.device)
-        self.bcp_actr_opt.step()
+        # Train the behavioral cloning actor
+        recon, mean, std = self.vae(state, action)
+        recon_loss = F.mse_loss(recon, action)
+        kl_loss = -0.5 * (1 + std.pow(2).log() - mean.pow(2) - std.pow(2)).mean()
+        # Note, the previous is just the closed form kl divergence for the normal distribution
+        vae_loss = recon_loss + (0.5 * kl_loss)
+
+        self.vae_opt.zero_grad()
+        vae_loss.backward()
+        average_gradients(self.vae, self.device)
+        self.vae_opt.step()
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
@@ -332,15 +369,15 @@ class TSPOAgent(object):
 
         # Compute target QZ estimate
         next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
-        next_action_from_bcp_actr = float(self.max_ac) * self.bcp_actr.sample(next_state, sg=True)
-        next_action = self.targ_actr.act(next_state, next_action_from_bcp_actr)
+        next_action_from_vae = self.vae.decode(next_state)
+        next_action = self.targ_actr.act(next_state, next_action_from_vae)
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
             twin_q_prime = self.targ_twin.QZ(next_state, next_action)
             q_prime = (self.hps.ensemble_q_lambda * torch.min(q_prime, twin_q_prime) +
                        (1. - self.hps.ensemble_q_lambda) * torch.max(q_prime, twin_q_prime))
-        # Take max over each action sampled from the BCP actor
+        # Take max over each action sampled
         q_prime = q_prime.reshape(self.hps.batch_size, -1).max(1)[0].reshape(-1, 1)
         # Assemble the target
         targ_q = (reward +
@@ -350,7 +387,7 @@ class TSPOAgent(object):
         # Add target bonus
         if self.hps.targ_q_bonus in ['al', 'pal']:
             al_q = self.targ_crit.QZ(state, action)
-            al_emp_adv_ac = self.ac_factory_2(self.bcp_actr, self.actr, state, ADV_ESTIM_SAMPLES)
+            al_emp_adv_ac = self.ac_factory_1(state, ADV_ESTIM_SAMPLES)
             al_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
             al_adv = al_q - al_emp_adv_from_actr
             if self.hps.clipped_double:
@@ -360,10 +397,10 @@ class TSPOAgent(object):
                 al_adv = torch.min(al_adv, twin_al_adv)
         if self.hps.targ_q_bonus == 'pal':
             _next_state = torch.Tensor(batch['obs1']).to(self.device)
-            _next_action_from_bcp_actr = float(self.max_ac) * self.bcp_actr.sample(_next_state, sg=True)
-            _next_action = self.targ_actr.act(_next_state, _next_action_from_bcp_actr)
+            _next_action_from_vae = self.vae.decode(_next_state)
+            _next_action = self.targ_actr.act(_next_state, _next_action_from_vae)
             pal_q = self.targ_crit.QZ(_next_state, _next_action)
-            pal_emp_adv_ac = self.ac_factory_2(self.bcp_actr, self.actr, _next_state, ADV_ESTIM_SAMPLES)
+            pal_emp_adv_ac = self.ac_factory_1(_next_state, ADV_ESTIM_SAMPLES)
             pal_emp_adv_from_actr = self.q_factory(self.targ_crit, _next_state, pal_emp_adv_ac).mean(dim=1)
             pal_adv = pal_q - pal_emp_adv_from_actr
             if self.hps.clipped_double:
@@ -430,16 +467,61 @@ class TSPOAgent(object):
             self.twin_opt.step()
 
         # Actor loss
-        action_from_bcp_actr = float(self.max_ac) * self.bcp_actr.sample(state, sg=True)
-        _actr_loss = -self.crit.QZ(state, self.actr.act(state, action_from_bcp_actr))
+        action_from_vae = self.vae.decode(state)
+        # First stream
+        _actr_loss = -self.crit.QZ(state, self.actr.act(state, action_from_vae))
         actr_loss = _actr_loss.mean()
-
         self.actr_opt.zero_grad()
-        actr_loss.backward()
+        actr_loss.backward(retain_graph=True)
         average_gradients(self.actr, self.device)
         if self.hps.clip_norm > 0:
             U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
         self.actr_opt.step()
+        # Second stream
+        if iters_so_far >= self.hps.warm_start:
+            emp_adv_ac = self.ac_factory_2(state, ADV_ESTIM_SAMPLES)
+            emp_adv_from_bcp_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1)
+
+            crr_q = self.crit.QZ(state, action)
+            crr_adv = crr_q - emp_adv_from_bcp_actr
+            crr_adv = torch.exp(crr_adv / BCP_TEMP).clamp(max=20.)
+            bcp_actr_loss = -self.bcp_actr.logp(state, action) * crr_adv.detach()
+
+            _state = torch.repeat_interleave(state, 10, 0)  # duplicate 10 times
+            _action_from_vae = self.vae.decode(_state)
+            _action = self.actr.act(_state, _action_from_vae)
+            _q_prime = self.crit.QZ(_state, _action)
+            if self.hps.clipped_double:
+                # Define QZ' as the minimum QZ value between TD3's twin QZ's
+                _twin_q_prime = self.targ_twin.QZ(_state, _action)
+                _q_prime = (self.hps.ensemble_q_lambda * torch.min(_q_prime, _twin_q_prime) +
+                            (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
+            # Take argmax over each action sampled
+            _argmax_action_index = q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
+            _argmax_action = torch.gather(_action.reshape(self.hps.batch_size, 10, -1),
+                                          1,
+                                          _argmax_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim))
+            _argmax_action = _argmax_action.squeeze(dim=1)
+
+            bcp_q = self.crit.QZ(state, _argmax_action)
+            bcp_adv = bcp_q - emp_adv_from_bcp_actr
+            bcp_adv = torch.exp(bcp_adv / BCP_TEMP).clamp(max=20.)
+            COEFF = 0.5
+            bcp_actr_loss -= COEFF * self.bcp_actr.logp(state, _argmax_action) * bcp_adv.detach()
+        else:
+            # Use behavioral cloning loss
+            bcp_actr_loss = ((self.alpha_ent * log_prob) - self.bcp_actr.logp(state, action)).mean()
+        bcp_actr_loss = bcp_actr_loss.mean()
+        self.bcp_actr_opt.zero_grad()
+        bcp_actr_loss.backward()
+        average_gradients(self.bcp_actr, self.device)
+        self.bcp_actr_opt.step()
+
+        # Update the alpha coefficient of the entropy regularizer via dual gradient descent
+        alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
+        self.log_alpha_ent_opt.zero_grad()
+        alpha_ent_loss.backward()
+        self.log_alpha_ent_opt.step()
 
         _lr = self.actr_sched.step(steps_so_far=iters_so_far)
         logger.info(f"lr is {_lr} after {iters_so_far} iters")
@@ -516,6 +598,12 @@ class TSPOAgent(object):
             eval_param.data.copy_(param.data)
         for param, eval_param in zip(self.bcp_actr.parameters(), self.cwpq_eval_bcp_actr.parameters()):
             eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.vae.parameters(), self.main_eval_vae.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.vae.parameters(), self.maxq_eval_vae.parameters()):
+            eval_param.data.copy_(param.data)
+        for param, eval_param in zip(self.vae.parameters(), self.cwpq_eval_vae.parameters()):
+            eval_param.data.copy_(param.data)
 
     def save(self, path, iters_so_far):
         torch.save(self.actr.state_dict(), osp.join(path, f"actr_{iters_so_far}.pth"))
@@ -523,6 +611,7 @@ class TSPOAgent(object):
         if self.hps.clipped_double:
             torch.save(self.twin.state_dict(), osp.join(path, f"twin_{iters_so_far}.pth"))
         torch.save(self.bcp_actr.state_dict(), osp.join(path, f"bcp_actr_{iters_so_far}.pth"))
+        torch.save(self.vae.state_dict(), osp.join(path, f"vae_{iters_so_far}.pth"))
 
     def load(self, path, iters_so_far):
         self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
@@ -530,3 +619,4 @@ class TSPOAgent(object):
         if self.hps.clipped_double:
             self.twin.load_state_dict(torch.load(osp.join(path, f"twin_{iters_so_far}.pth")))
         self.bcp_actr.load_state_dict(torch.load(osp.join(path, f"bcp_actr_{iters_so_far}.pth")))
+        self.vae.load_state_dict(torch.load(osp.join(path, f"vae_{iters_so_far}.pth")))

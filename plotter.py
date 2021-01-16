@@ -176,9 +176,6 @@ def plot(args):
     # Plot mean and standard deviation
     for j, env in enumerate(sorted(experiment_map.keys())):
 
-        # Get the maximum Y value accross all the experiments
-        ymax = -np.infty
-
         # Create subplot
         ax = axs[j // GRID_SIZE_Y, j % GRID_SIZE_Y]
         ax.axis('on')
@@ -214,10 +211,6 @@ def plot(args):
                                 smooth_mean + (args.stdfrac * smooth_std),
                                 facecolor=color_map[key],
                                 alpha=0.1)
-
-                # Get the maximum Y value accross all the experiments
-                _ymax = np.amax(mean + (args.stdfrac * std))
-                ymax = max(_ymax, ymax)
             else:
                 ax.plot(xcol_dump[key][0], ycol_dump[key][0])
 

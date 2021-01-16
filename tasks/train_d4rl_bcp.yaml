@@ -1,7 +1,7 @@
 meta:
   task: 'train'
   benchmark: 'd4rl'
-  algo: 'ptso'
+  algo: 'bcp'
 
 resources:
   cuda: true
