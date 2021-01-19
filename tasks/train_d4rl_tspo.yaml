@@ -76,3 +76,4 @@ ra_lr: 1.0e-3
 scale_ra_grad_pen: 0.
 targ_q_bonus: 'none'
 scale_targ_q_bonus: 0.9
+scale_second_stream_loss: 0.2

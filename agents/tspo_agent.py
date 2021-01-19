@@ -64,8 +64,6 @@ class TSPOAgent(object):
         hidden_dims = perception_stack_parser(self.hps.perception_stack)
         self.actr = ActorPhi(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = ActorPhi(self.env, self.hps, self.rms_obs, hidden_dims[0]).to(self.device)
-        self.targ_actr.load_state_dict(self.actr.state_dict())
 
         self.bcp_actr = TanhGaussActor(self.env, self.hps, self.rms_obs, hidden_dims[3]).to(self.device)
         sync_with_root(self.actr)
@@ -370,7 +368,7 @@ class TSPOAgent(object):
         # Compute target QZ estimate
         next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
         next_action_from_vae = self.vae.decode(next_state)
-        next_action = self.targ_actr.act(next_state, next_action_from_vae)
+        next_action = self.actr.act(next_state, next_action_from_vae)
         q_prime = self.targ_crit.QZ(next_state, next_action)
         if self.hps.clipped_double:
             # Define QZ' as the minimum QZ value between TD3's twin QZ's
@@ -387,7 +385,7 @@ class TSPOAgent(object):
         # Add target bonus
         if self.hps.targ_q_bonus in ['al', 'pal']:
             al_q = self.targ_crit.QZ(state, action)
-            al_emp_adv_ac = self.ac_factory_1(state, ADV_ESTIM_SAMPLES)
+            al_emp_adv_ac = self.ac_factory_2(state, ADV_ESTIM_SAMPLES)
             al_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
             al_adv = al_q - al_emp_adv_from_actr
             if self.hps.clipped_double:
@@ -397,10 +395,9 @@ class TSPOAgent(object):
                 al_adv = torch.min(al_adv, twin_al_adv)
         if self.hps.targ_q_bonus == 'pal':
             _next_state = torch.Tensor(batch['obs1']).to(self.device)
-            _next_action_from_vae = self.vae.decode(_next_state)
-            _next_action = self.targ_actr.act(_next_state, _next_action_from_vae)
+            _next_action = float(self.max_ac) * self.bcp_actr.sample(_next_state, sg=False)
             pal_q = self.targ_crit.QZ(_next_state, _next_action)
-            pal_emp_adv_ac = self.ac_factory_1(_next_state, ADV_ESTIM_SAMPLES)
+            pal_emp_adv_ac = self.ac_factory_2(_next_state, ADV_ESTIM_SAMPLES)
             pal_emp_adv_from_actr = self.q_factory(self.targ_crit, _next_state, pal_emp_adv_ac).mean(dim=1)
             pal_adv = pal_q - pal_emp_adv_from_actr
             if self.hps.clipped_double:
@@ -506,8 +503,8 @@ class TSPOAgent(object):
             bcp_q = self.crit.QZ(state, _argmax_action)
             bcp_adv = bcp_q - emp_adv_from_bcp_actr
             bcp_adv = torch.exp(bcp_adv / BCP_TEMP).clamp(max=20.)
-            COEFF = 0.5
-            bcp_actr_loss -= COEFF * self.bcp_actr.logp(state, _argmax_action) * bcp_adv.detach()
+            bcp_actr_loss -= (self.hps.scale_second_stream_loss *
+                              self.bcp_actr.logp(state, _argmax_action) * bcp_adv.detach())
         else:
             # Use behavioral cloning loss
             bcp_actr_loss = ((self.alpha_ent * log_prob) - self.bcp_actr.logp(state, action)).mean()
@@ -580,9 +577,6 @@ class TSPOAgent(object):
 
     def update_target_net(self):
         """Update the target networks"""
-        for param, targ_param in zip(self.actr.parameters(), self.targ_actr.parameters()):
-            targ_param.data.copy_(self.hps.polyak * param.data +
-                                  (1. - self.hps.polyak) * targ_param.data)
         for param, targ_param in zip(self.crit.parameters(), self.targ_crit.parameters()):
             targ_param.data.copy_(self.hps.polyak * param.data +
                                   (1. - self.hps.polyak) * targ_param.data)

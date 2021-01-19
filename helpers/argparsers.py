@@ -133,5 +133,6 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--base_pi_loss', type=str, default=None)
     parser.add_argument('--targ_q_bonus', type=str, default=None)
     parser.add_argument('--scale_targ_q_bonus', type=float, default=0.9)
+    parser.add_argument('--scale_second_stream_loss', type=float, default=0.2)
 
     return parser

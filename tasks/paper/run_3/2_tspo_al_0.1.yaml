@@ -19,7 +19,7 @@ eval_steps_per_iter: 50
 eval_frequency: 5e3
 
 # Model
-perception_stack: '"400 300, 400 300, 750 750"'
+perception_stack: '"400 300, 400 300, 750 750, 256 256"'
 layer_norm: true
 
 # Optimization
@@ -30,7 +30,7 @@ clip_norm: 0.
 wd_scale: 0.
 
 # Algorithm
-batch_size: 100
+batch_size: 256
 gamma: 0.99
 mem_size: 2e6
 polyak: 0.005
@@ -70,8 +70,10 @@ offline: true
 bcq_phi: 0.05
 behavior_lr: 3.0e-4
 state_dependent_std: true
+warm_start: 20000
 use_reward_averager: false
 ra_lr: 1.0e-3
 scale_ra_grad_pen: 0.
-targ_q_bonus: 'none'
-scale_targ_q_bonus: 0.
+targ_q_bonus: 'al'
+scale_targ_q_bonus: 0.1
+scale_second_stream_loss: 0.1
