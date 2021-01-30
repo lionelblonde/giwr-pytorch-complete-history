@@ -205,6 +205,10 @@ ENV_BUNDLES = {
         #             'kitchen-partial-v0',
         #             'kitchen-complete-v0',
         #             'kitchen-mixed-v0'],
+
+        'random': ['halfcheetah-random-v0',
+                   'walker2d-random-v0',
+                   'hopper-medium-expert-v0'],
     },
 }
 
@@ -239,7 +243,7 @@ class Spawner(object):
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri',
-                          'use_rnd_monitoring', 'use_reward_averager']
+                          'use_rnd_monitoring', 'use_reward_averager', 'use_temp_corr']
 
         if 'slurm' in self.args.deployment:
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -414,6 +418,7 @@ class Spawner(object):
                 'targ_q_bonus': self.config.get('targ_q_bonus', None),
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
+                'use_temp_corr': self.config.get('use_temp_corr', True),
             }
         else:
             # No search, fixed hyper-parameters
@@ -522,6 +527,7 @@ class Spawner(object):
                 'targ_q_bonus': self.config.get('targ_q_bonus', None),
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
+                'use_temp_corr': self.config.get('use_temp_corr', True),
             }
 
         # Duplicate for each environment

@@ -16,7 +16,6 @@ from agents.nets import perception_stack_parser, ActorPhi, ActorVAE, TanhGaussAc
 
 
 CWPQ_TEMP = 10.0
-CRR_TEMP = 1.0
 BCP_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
 ONE_SIDED_PEN = True
@@ -383,7 +382,7 @@ class TSPOAgent(object):
                   self.denorm_rets(q_prime))
 
         # Add target bonus
-        if self.hps.targ_q_bonus in ['al', 'pal']:
+        if self.hps.targ_q_bonus == 'al':
             al_q = self.targ_crit.QZ(state, action)
             al_emp_adv_ac = self.ac_factory_2(state, ADV_ESTIM_SAMPLES)
             al_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
@@ -393,22 +392,7 @@ class TSPOAgent(object):
                 twin_al_emp_adv_from_actr = self.q_factory(self.targ_twin, state, al_emp_adv_ac).mean(dim=1)
                 twin_al_adv = twin_al_q - twin_al_emp_adv_from_actr
                 al_adv = torch.min(al_adv, twin_al_adv)
-        if self.hps.targ_q_bonus == 'pal':
-            _next_state = torch.Tensor(batch['obs1']).to(self.device)
-            _next_action = float(self.max_ac) * self.bcp_actr.sample(_next_state, sg=False)
-            pal_q = self.targ_crit.QZ(_next_state, _next_action)
-            pal_emp_adv_ac = self.ac_factory_2(_next_state, ADV_ESTIM_SAMPLES)
-            pal_emp_adv_from_actr = self.q_factory(self.targ_crit, _next_state, pal_emp_adv_ac).mean(dim=1)
-            pal_adv = pal_q - pal_emp_adv_from_actr
-            if self.hps.clipped_double:
-                twin_pal_q = self.targ_twin.QZ(_next_state, _next_action)
-                twin_pal_emp_adv_from_actr = self.q_factory(self.targ_twin, _next_state, pal_emp_adv_ac).mean(dim=1)
-                twin_pal_adv = twin_pal_q - twin_pal_emp_adv_from_actr
-                pal_adv = torch.min(pal_adv, twin_pal_adv)
-        if self.hps.targ_q_bonus == 'al':
             targ_q += self.hps.scale_targ_q_bonus * al_adv
-        if self.hps.targ_q_bonus == 'pal':
-            targ_q += self.hps.scale_targ_q_bonus * torch.max(al_adv, pal_adv)
 
         targ_q = self.norm_rets(targ_q).detach()
 
@@ -476,12 +460,19 @@ class TSPOAgent(object):
         self.actr_opt.step()
         # Second stream
         if iters_so_far >= self.hps.warm_start:
+
+            if self.hps.targ_q_bonus in ['al', 'pal'] and self.hps.use_temp_corr:
+                # Apply temperature correction
+                bcp_temp = (1. + self.hps.scale_targ_q_bonus) * BCP_TEMP
+            else:
+                bcp_temp = BCP_TEMP
+
             emp_adv_ac = self.ac_factory_2(state, ADV_ESTIM_SAMPLES)
             emp_adv_from_bcp_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1)
 
             crr_q = self.crit.QZ(state, action)
             crr_adv = crr_q - emp_adv_from_bcp_actr
-            crr_adv = torch.exp(crr_adv / BCP_TEMP).clamp(max=20.)
+            crr_adv = torch.exp(crr_adv / bcp_temp).clamp(max=20.)
             bcp_actr_loss = -self.bcp_actr.logp(state, action) * crr_adv.detach()
 
             _state = torch.repeat_interleave(state, 10, 0)  # duplicate 10 times
@@ -502,7 +493,7 @@ class TSPOAgent(object):
 
             bcp_q = self.crit.QZ(state, _argmax_action)
             bcp_adv = bcp_q - emp_adv_from_bcp_actr
-            bcp_adv = torch.exp(bcp_adv / BCP_TEMP).clamp(max=20.)
+            bcp_adv = torch.exp(bcp_adv / bcp_temp).clamp(max=20.)
             bcp_actr_loss -= (self.hps.scale_second_stream_loss *
                               self.bcp_actr.logp(state, _argmax_action) * bcp_adv.detach())
         else:

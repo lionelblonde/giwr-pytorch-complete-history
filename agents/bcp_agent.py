@@ -23,6 +23,7 @@ CQL_TEMP = 1.0
 EPS_CE = 1e-6
 CWPQ_TEMP = 10.0
 CRR_TEMP = 1.0
+AWR_TEMP = 0.05
 ADV_ESTIM_SAMPLES = 4
 ONE_SIDED_PEN = True
 RND_INNER_SCALE = 100.0
@@ -568,30 +569,78 @@ class BCPAgent(object):
                       self.denorm_rets(q_prime))
 
             # Add target bonus
-            if self.hps.targ_q_bonus in ['al', 'pal']:
-                al_q = self.targ_crit.QZ(state, action)
-                al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
-                al_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
-                al_adv = al_q - al_emp_adv_from_actr
-                if self.hps.clipped_double:
-                    twin_al_q = self.targ_twin.QZ(state, action)
-                    twin_al_emp_adv_from_actr = self.q_factory(self.targ_twin, state, al_emp_adv_ac).mean(dim=1)
-                    twin_al_adv = twin_al_q - twin_al_emp_adv_from_actr
-                    al_adv = torch.min(al_adv, twin_al_adv)
-            if self.hps.targ_q_bonus == 'pal':
-                pal_q = self.targ_crit.QZ(next_state, next_action)
-                pal_emp_adv_ac, _ = self.ac_factory(self.actr, next_state, ADV_ESTIM_SAMPLES)
-                pal_emp_adv_from_actr = self.q_factory(self.targ_crit, next_state, pal_emp_adv_ac).mean(dim=1)
-                pal_adv = pal_q - pal_emp_adv_from_actr
-                if self.hps.clipped_double:
-                    twin_pal_q = self.targ_twin.QZ(next_state, next_action)
-                    twin_pal_emp_adv_from_actr = self.q_factory(self.targ_twin, next_state, pal_emp_adv_ac).mean(dim=1)
-                    twin_pal_adv = twin_pal_q - twin_pal_emp_adv_from_actr
-                    pal_adv = torch.min(pal_adv, twin_pal_adv)
-            if self.hps.targ_q_bonus == 'al':
-                targ_q += self.hps.scale_targ_q_bonus * al_adv
-            if self.hps.targ_q_bonus == 'pal':
-                targ_q += self.hps.scale_targ_q_bonus * torch.max(al_adv, pal_adv)
+            if 'al' in self.hps.targ_q_bonus:  # easiest solution, careful
+                assert not self.hps.use_c51 and not self.hps.use_qr, "distributional critics not allowed here."
+                if 'td' in self.hps.targ_q_bonus:
+                    al_q = self.targ_crit.QZ(state, action)
+                    al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                    al_emp_adv_from_actr = self.q_factory(self.targ_crit, state, al_emp_adv_ac).mean(dim=1)
+                    al_adv = al_q - al_emp_adv_from_actr
+                    if self.hps.clipped_double:
+                        twin_al_q = self.targ_twin.QZ(state, action)
+                        twin_al_emp_adv_from_actr = self.q_factory(self.targ_twin, state, al_emp_adv_ac).mean(dim=1)
+                        twin_al_adv = twin_al_q - twin_al_emp_adv_from_actr
+                        al_adv = torch.min(al_adv, twin_al_adv)
+                elif 'tdonlinenet' in self.hps.targ_q_bonus:
+                    al_q = self.crit.QZ(state, action)
+                    al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                    al_emp_adv_from_actr = self.q_factory(self.crit, state, al_emp_adv_ac).mean(dim=1)
+                    al_adv = al_q - al_emp_adv_from_actr
+                    if self.hps.clipped_double:
+                        twin_al_q = self.twin.QZ(state, action)
+                        twin_al_emp_adv_from_actr = self.q_factory(self.twin, state, al_emp_adv_ac).mean(dim=1)
+                        twin_al_adv = twin_al_q - twin_al_emp_adv_from_actr
+                        al_adv = torch.min(al_adv, twin_al_adv)
+                elif 'mc' in self.hps.targ_q_bonus:
+                    al_q = torch.Tensor(batch['rets']).to(self.device)
+                    al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                    al_emp_adv_from_actr = self.q_factory(self.mc_crit, state, al_emp_adv_ac, mc=True).mean(dim=1)
+                    al_adv = al_q - al_emp_adv_from_actr
+                elif 'qprop' in self.hps.targ_q_bonus:
+                    qprop_q_from_actr = self.crit.QZ(state, action_from_actr)
+                    al_q = torch.Tensor(batch['rets']).to(self.device)
+                    al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
+                    al_emp_adv_from_actr = self.q_factory(self.mc_crit, state, al_emp_adv_ac, mc=True).mean(dim=1)
+                    qprop_adv = al_q - al_emp_adv_from_actr
+                    # Compute the gradients involved in the control variate
+                    _grads = autograd.grad(
+                        outputs=qprop_q_from_actr,
+                        inputs=[action_from_actr],
+                        only_inputs=True,
+                        grad_outputs=[torch.ones_like(qprop_q_from_actr)],
+                        retain_graph=True,
+                        create_graph=True,
+                        allow_unused=False,
+                    )
+                    grads = list(_grads)[0]
+                    # Compute the expected action from the policy, re-using the ones previously predicted
+                    expected_action = al_emp_adv_ac.view(-1, ADV_ESTIM_SAMPLES, self.ac_dim).mean(dim=1)
+                    # Assemble the control variate
+                    control_variate = (grads * (action - expected_action)).sum(dim=1, keepdim=True)
+                    # Compute covariance between advantage estimate (MC in Q-prop) and control variate
+                    covariance = qprop_adv * control_variate
+                    # Compute eta
+                    if 'aggressive' in self.hps.targ_q_bonus:
+                        eta = 1. * torch.sign(covariance).detach()
+                    elif 'conservative' in self.hps.targ_q_bonus:
+                        eta = 1. * covariance.gt(0.).detach()
+                    else:
+                        raise ValueError("invalid heuristic for eta in qprop.")
+                    # Augment the log-likelihood weight with the weighted control variate
+                    qprop_adv -= eta * control_variate
+                    # Assemble the first term of the bonus
+                    al_adv = -self.actr.logp(state, action) * qprop_adv.detach()
+                    # Assemble the second term of the bonus
+                    al_adv -= eta * self.crit.QZ(state, expected_action)
+                else:
+                    raise ValueError("invalid advantage learning variant.")
+                # Add the bonus to the Bellman target
+                if 'll' in self.hps.targ_q_bonus:
+                    # Scale with the likelihood that the learned policy will do such an action
+                    targ_q += self.actr.logp(state, action).clamp(max=0.).exp() * al_adv
+                else:
+                    # Scale with the user-provided hyper-parameter
+                    targ_q += self.hps.scale_targ_q_bonus * al_adv
 
             targ_q = self.norm_rets(targ_q).detach()
 
@@ -778,6 +827,18 @@ class BCPAgent(object):
 
         # Actor loss
         if iters_so_far >= self.hps.warm_start:
+
+            if self.hps.use_temp_corr:
+                # Apply temperature correction
+                if 'al' in self.hps.targ_q_bonus:
+                    crr_temp = (1. + self.hps.scale_targ_q_bonus) * CRR_TEMP
+                elif 'al' in self.hps.targ_q_bonus and 'll' in self.hps.targ_q_bonus:
+                    crr_temp = (1. + self.actr.logp(state, action).clamp(max=0.).exp().detach()) * CRR_TEMP
+                else:
+                    crr_temp = CRR_TEMP
+            else:
+                crr_temp = CRR_TEMP
+
             # Use offline RL loss
             q_from_actr = self.crit.QZ(state, action_from_actr)
             # Note: for monitoring purposes, evaluate Q at the agent's action
@@ -806,22 +867,26 @@ class BCPAgent(object):
                 else:
                     emp_adv_from_actr = self.q_factory(self.crit, state, emp_adv_ac).mean(dim=1)
                 crr_adv = crr_q - emp_adv_from_actr
+
                 if 'binary' in self.hps.base_pi_loss:
                     crr_adv = 1. * crr_adv.gt(0.)  # trick to easily cast to float
                 elif self.hps.base_pi_loss == 'crr_exp':
-                    crr_adv = torch.exp(crr_adv / CRR_TEMP).clamp(max=20.)
+                    crr_adv = torch.exp(crr_adv / crr_temp).clamp(max=20.)
+
                     is_crr_adv_clipped_sum = (1.0 * (crr_adv == 20.)).sum(dim=0, keepdim=True)
                     metrics['is_crr_adv_clipped_sum'].append(is_crr_adv_clipped_sum)
+
                 actr_loss = -self.actr.logp(state, action) * crr_adv.detach()
+
             elif self.hps.base_pi_loss == 'awr':
                 awr_q = torch.Tensor(batch['rets']).to(self.device)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
                 emp_adv_from_actr = self.q_factory(self.mc_crit, state, emp_adv_ac, mc=True).mean(dim=1)
                 awr_adv = awr_q - emp_adv_from_actr
-                awr_adv = torch.exp(awr_adv / CRR_TEMP).clamp(max=20.)
+                awr_adv = torch.exp(awr_adv / AWR_TEMP).clamp(max=20.)
                 actr_loss = -self.actr.logp(state, action) * awr_adv.detach()
             elif self.hps.base_pi_loss == 'bc':
-                actr_loss = ((self.alpha_ent * log_prob) - self.actr.logp(state, action)).mean()
+                actr_loss = - self.actr.logp(state, action).mean()
             else:
                 raise NotImplementedError("invalid base loss for policy improvement.")
             # Compute the mean
