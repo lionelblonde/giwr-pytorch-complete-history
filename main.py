@@ -70,6 +70,9 @@ def train(args):
     # Create environment
     env = make_env(args.env_id, worker_seed)
 
+    RMIN = np.infty
+    RMAX = -np.infty
+
     if args.offline:
         # Ensure the environment possesses a dataset in the D4RL suite
         assert hasattr(env, 'get_dataset')  # unique (a priori) to d4rl envs
@@ -109,6 +112,8 @@ def train(args):
             _acs.append(ac)
             _obs1.append(next_ob)
             _acs1.append(next_ac)
+            RMIN = min(RMIN, rew)
+            RMAX = max(RMAX, rew)
             _rews.append(rew)
             _dones1.append(done)
             ep_step += 1
@@ -185,6 +190,8 @@ def train(args):
         logger.info(f"over-writting memory size: {copy(args.mem_size)} -> {new_num_transitions}")
         # Overwrite the memory size hyper-parameter in the offline setting
         args.mem_size = new_num_transitions
+        # Log the range of the reward signal in the dataset
+        logger.info(f"RMIN={RMIN}, RMAX={RMAX}")
     else:
         to_load_in_memory = None
 

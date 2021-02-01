@@ -581,57 +581,11 @@ class BCPAgent(object):
                         twin_al_emp_adv_from_actr = self.q_factory(self.targ_twin, state, al_emp_adv_ac).mean(dim=1)
                         twin_al_adv = twin_al_q - twin_al_emp_adv_from_actr
                         al_adv = torch.min(al_adv, twin_al_adv)
-                elif 'tdonlinenet' in self.hps.targ_q_bonus:
-                    al_q = self.crit.QZ(state, action)
-                    al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
-                    al_emp_adv_from_actr = self.q_factory(self.crit, state, al_emp_adv_ac).mean(dim=1)
-                    al_adv = al_q - al_emp_adv_from_actr
-                    if self.hps.clipped_double:
-                        twin_al_q = self.twin.QZ(state, action)
-                        twin_al_emp_adv_from_actr = self.q_factory(self.twin, state, al_emp_adv_ac).mean(dim=1)
-                        twin_al_adv = twin_al_q - twin_al_emp_adv_from_actr
-                        al_adv = torch.min(al_adv, twin_al_adv)
                 elif 'mc' in self.hps.targ_q_bonus:
                     al_q = torch.Tensor(batch['rets']).to(self.device)
                     al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
                     al_emp_adv_from_actr = self.q_factory(self.mc_crit, state, al_emp_adv_ac, mc=True).mean(dim=1)
                     al_adv = al_q - al_emp_adv_from_actr
-                elif 'qprop' in self.hps.targ_q_bonus:
-                    qprop_q_from_actr = self.crit.QZ(state, action_from_actr)
-                    al_q = torch.Tensor(batch['rets']).to(self.device)
-                    al_emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
-                    al_emp_adv_from_actr = self.q_factory(self.mc_crit, state, al_emp_adv_ac, mc=True).mean(dim=1)
-                    qprop_adv = al_q - al_emp_adv_from_actr
-                    # Compute the gradients involved in the control variate
-                    _grads = autograd.grad(
-                        outputs=qprop_q_from_actr,
-                        inputs=[action_from_actr],
-                        only_inputs=True,
-                        grad_outputs=[torch.ones_like(qprop_q_from_actr)],
-                        retain_graph=True,
-                        create_graph=True,
-                        allow_unused=False,
-                    )
-                    grads = list(_grads)[0]
-                    # Compute the expected action from the policy, re-using the ones previously predicted
-                    expected_action = al_emp_adv_ac.view(-1, ADV_ESTIM_SAMPLES, self.ac_dim).mean(dim=1)
-                    # Assemble the control variate
-                    control_variate = (grads * (action - expected_action)).sum(dim=1, keepdim=True)
-                    # Compute covariance between advantage estimate (MC in Q-prop) and control variate
-                    covariance = qprop_adv * control_variate
-                    # Compute eta
-                    if 'aggressive' in self.hps.targ_q_bonus:
-                        eta = 1. * torch.sign(covariance).detach()
-                    elif 'conservative' in self.hps.targ_q_bonus:
-                        eta = 1. * covariance.gt(0.).detach()
-                    else:
-                        raise ValueError("invalid heuristic for eta in qprop.")
-                    # Augment the log-likelihood weight with the weighted control variate
-                    qprop_adv -= eta * control_variate
-                    # Assemble the first term of the bonus
-                    al_adv = -self.actr.logp(state, action) * qprop_adv.detach()
-                    # Assemble the second term of the bonus
-                    al_adv -= eta * self.crit.QZ(state, expected_action)
                 else:
                     raise ValueError("invalid advantage learning variant.")
                 # Add the bonus to the Bellman target
