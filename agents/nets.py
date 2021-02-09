@@ -586,7 +586,7 @@ class RewardAverager(nn.Module):
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, hidden_dims[0])),
+                ('fc', nn.Linear(ob_dim + ac_dim + ob_dim, hidden_dims[0])),
                 ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidden_dims[0])),
                 ('nl', nn.ReLU()),
             ]))),
@@ -601,10 +601,11 @@ class RewardAverager(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.head.apply(init(weight_scale=0.01))
 
-    def forward(self, ob, ac):
+    def forward(self, ob, ac, next_ob):
         if self.rms_obs is not None:
             ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
-        x = torch.cat([ob, ac], dim=-1)
+            next_ob = self.rms_obs.standardize(next_ob).clamp(*STANDARDIZED_OB_CLAMPS)
+        x = torch.cat([ob, ac, next_ob], dim=-1)
         x = self.fc_stack(x)
         x = self.head(x)
         return x

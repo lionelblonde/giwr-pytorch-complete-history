@@ -115,8 +115,6 @@ class RandomNetworkDistillation(object):
         # Container for all the metrics
         metrics = defaultdict(list)
 
-        logger.info("updating rnd predictor")
-
         # Transfer to device
         state = torch.Tensor(batch['obs0']).to(self.device)
         action = torch.Tensor(batch['acs']).to(self.device)

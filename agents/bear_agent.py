@@ -1,4 +1,5 @@
 from collections import defaultdict
+import os
 import os.path as osp
 
 import numpy as np
@@ -17,7 +18,13 @@ from agents.nets import perception_stack_parser, TanhGaussActor, ActorVAE, Criti
 EXPANSION = 4
 LOG_ALPHA_CLAMPS = [-5., 10.]
 CWPQ_TEMP = 10.0
-CRR_TEMP = 1.0
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class BEARAgent(object):
@@ -368,7 +375,8 @@ class BEARAgent(object):
             self.actr_opt.step()
 
             _lr = self.actr_sched.step(steps_so_far=iters_so_far)
-            logger.info(f"lr is {_lr} after {iters_so_far} iters")
+            if DEBUG:
+                logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
             if self.hps.use_adaptive_alpha:
                 alpha_loss = -(self.alpha * (mmd_loss - self.hps.bear_mmd_epsilon).detach()).mean()
@@ -376,7 +384,8 @@ class BEARAgent(object):
                 alpha_loss.backward()
                 self.log_alpha_opt.step()
 
-            logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
+            if DEBUG:
+                logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))

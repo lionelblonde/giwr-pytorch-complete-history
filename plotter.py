@@ -48,19 +48,26 @@ def plot(args):
     dest_dir = "plots/batchplots_{}".format(hash_.hexdigest()[:20])
     os.makedirs(dest_dir, exist_ok=False)
     # Palette
+    # curves = [
+    #     'xkcd:sky blue',
+    #     'xkcd:pinkish brown',
+    #     'xkcd:maize',
+    #     'xkcd:wisteria',
+    #     'xkcd:mango',
+    #     'xkcd:bubblegum',
+    #     'xkcd:turtle green',
+    #     'xkcd:peacock blue',
+    #     'xkcd:orangered',
+    #     'xkcd:camo green',
+    #     'xkcd:petrol',
+    #     'xkcd:pea soup',
+    # ]
     curves = [
-        'xkcd:sky blue',
-        'xkcd:pinkish brown',
-        'xkcd:maize',
-        'xkcd:wisteria',
-        'xkcd:mango',
-        'xkcd:bubblegum',
-        'xkcd:turtle green',
-        'xkcd:peacock blue',
-        'xkcd:orangered',
-        'xkcd:camo green',
-        'xkcd:petrol',
-        'xkcd:pea soup',
+        (39, 181, 234),
+        (107, 64, 216),
+        (239, 65, 70),
+        (244, 172, 54),
+        (104, 222, 122),
     ]
     palette = {
         'grid': (231, 234, 236),
@@ -74,6 +81,9 @@ def plot(args):
     for k, v in palette.items():
         if k != 'curves':
             palette[k] = tuple(float(e) / 255. for e in v)
+
+    palette['curves'] = [tuple(float(e) / 255. for e in c) for c in v]
+
     # Figure color
     plt.rcParams['axes.facecolor'] = palette['face']
     # DPI
@@ -210,7 +220,7 @@ def plot(args):
                                 smooth_mean - (args.stdfrac * smooth_std),
                                 smooth_mean + (args.stdfrac * smooth_std),
                                 facecolor=color_map[key],
-                                alpha=0.1)
+                                alpha=0.25)
             else:
                 ax.plot(xcol_dump[key][0], ycol_dump[key][0])
 

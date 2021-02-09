@@ -5,6 +5,7 @@ import sys
 import numpy as np
 import subprocess
 import yaml
+from datetime import datetime
 
 import logger
 from helpers.misc_util import zipsame, boolean_flag
@@ -29,7 +30,7 @@ ENV_BUNDLES = {
                   'Ant-v3'],
     },
     'd4rl': {
-        'debug': ['hopper-expert-v0'],
+        'debug': ['halfcheetah-expert-v0'],
         'debug_maze2d': ['maze2d-umaze-v1'],
         'debug_antmaze': ['antmaze-medium-play-v0'],
         'debug_adroit': ['pen-human-v0'],
@@ -206,9 +207,9 @@ ENV_BUNDLES = {
         #             'kitchen-complete-v0',
         #             'kitchen-mixed-v0'],
 
-        'random': ['halfcheetah-random-v0',
-                   'walker2d-random-v0',
-                   'hopper-medium-expert-v0'],
+        'mixing': ['hopper-expert-v0',
+                   'halfcheetah-expert-v0',
+                   'walker2d-expert-v0'],
     },
 }
 
@@ -226,8 +227,9 @@ class Spawner(object):
         self.need_datasets = self.config['offline']
 
         # Assemble wandb project name
-        self.wandb_project = (self.config['logging']['wandb_project'].upper() + '-' +
-                              ('slurm' if 'slurm' in self.args.deployment else self.args.deployment).upper())
+        self.wandb_project = '-'.join([self.config['logging']['wandb_project'].upper(),
+                                       ('slurm' if 'slurm' in self.args.deployment else self.args.deployment).upper(),
+                                       datetime.now().strftime('%B')[0:3].upper() + f"{datetime.now().year}"])
 
         # Define spawn type
         self.type = 'sweep' if self.args.sweep else 'fixed'
@@ -243,7 +245,8 @@ class Spawner(object):
                           'brac_use_adaptive_alpha_ent', 'brac_use_adaptive_alpha_div', 'brac_value_kl_pen',
                           'cql_deterministic_backup', 'cql_use_adaptive_alpha_ent',
                           'cql_use_adaptive_alpha_pri',
-                          'use_rnd_monitoring', 'use_reward_averager', 'use_temp_corr']
+                          'use_rnd_monitoring', 'use_reward_averager', 'use_temp_corr',
+                          'mix_with_random']
 
         if 'slurm' in self.args.deployment:
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -419,6 +422,9 @@ class Spawner(object):
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
                 'use_temp_corr': self.config.get('use_temp_corr', True),
+
+                'mix_with_random': self.config.get('mix_with_random', False),
+                'mixing_ratio': self.config.get('mixing_ratio', 0.),
             }
         else:
             # No search, fixed hyper-parameters
@@ -528,6 +534,9 @@ class Spawner(object):
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
                 'use_temp_corr': self.config.get('use_temp_corr', True),
+
+                'mix_with_random': self.config.get('mix_with_random', False),
+                'mixing_ratio': self.config.get('mixing_ratio', 0.),
             }
 
         # Duplicate for each environment
@@ -589,11 +598,12 @@ class Spawner(object):
                     bash_script_str += f'#SBATCH --constraint="{contraint}"\n'  # single quote to escape
             bash_script_str += ('\n')
             # Load modules
-            bash_script_str += ("module load GCC/8.3.0 OpenMPI/3.1.4\n")
+            bash_script_str += ("module load GCC/8.3.0\n")
+            bash_script_str += ("module load OpenMPI/3.1.4\n")
             if self.config['meta']['benchmark'] == 'd4rl':  # legacy comment: needed for dmc too
                 bash_script_str += ("module load Mesa/19.2.1\n")
             if self.config['resources']['cuda']:
-                bash_script_str += ("module load CUDA\n")
+                bash_script_str += ("module load CUDA/11.1.1\n")
             bash_script_str += ('\n')
             # Launch command
             if self.args.deployment == 'slurm':
@@ -720,8 +730,18 @@ if __name__ == "__main__":
     boolean_flag(parser, 'deploy_now', default=True, help="deploy immediately?")
     boolean_flag(parser, 'sweep', default=False, help="hp search?")
     boolean_flag(parser, 'wandb_upgrade', default=True, help="upgrade wandb?")
-    boolean_flag(parser, 'debug', default=False, help="toggle debug/verbose mode")
+    boolean_flag(parser, 'debug', default=False, help="toggle debug/verbose mode in spawner")
+    boolean_flag(parser, 'wandb_dryrun', default=True, help="toggle wandb offline mode")
+    parser.add_argument('--debug_lvl', type=int, default=0, help="set the debug level for the spawned runs")
     args = parser.parse_args()
+
+    if args.wandb_dryrun:
+        # Run wandb in offline mode (does not sync with wandb servers in real time,
+        # use `wandb sync` later on the local directory in `wandb/` to sync to the wandb cloud hosted app)
+        os.environ["WANDB_MODE"] = "dryrun"
+
+    # Set the debug level for the spawned runs
+    os.environ["DEBUG_LVL"] = str(args.debug_lvl)
 
     # Create (and optionally deploy) the jobs
     run(args)

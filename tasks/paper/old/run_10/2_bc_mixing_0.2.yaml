@@ -87,6 +87,10 @@ ra_lr: 1.0e-3
 scale_ra_grad_pen: 0.
 base_next_action: 'theta'
 base_pe_loss: 'pure_td'
-base_pi_loss: 'crr_exp'
+base_pi_loss: 'bc'
 targ_q_bonus: 'none'
-scale_targ_q_bonus: 0.9
+scale_targ_q_bonus: 0.
+use_temp_corr: false
+
+mix_with_random: true
+mixing_ratio: 0.2

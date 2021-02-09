@@ -105,7 +105,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--log_alpha_lr', type=float, default=1e-3)
     parser.add_argument('--init_temp_log_alpha', type=float, default=0.1)
     parser.add_argument('--crit_targ_update_freq', type=int, default=1)
-    parser.add_argument('--warm_start', type=int, default=20000)
+    parser.add_argument('--warm_start', type=int, default=0.)
     parser.add_argument('--bear_mmd_kernel', type=str, choices=['laplacian', 'gaussian'], default='laplacian')
     parser.add_argument('--bear_mmd_sigma', type=float, default=20.)
     parser.add_argument('--bear_mmd_epsilon', type=float, default=0.05)
@@ -135,5 +135,8 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--scale_targ_q_bonus', type=float, default=0.9)
     parser.add_argument('--scale_second_stream_loss', type=float, default=0.2)
     boolean_flag(parser, 'use_temp_corr', default=True)
+
+    boolean_flag(parser, 'mix_with_random', default=False)
+    parser.add_argument('--mixing_ratio', type=float, default=0.)
 
     return parser

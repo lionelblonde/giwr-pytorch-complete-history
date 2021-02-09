@@ -1,4 +1,5 @@
 from collections import defaultdict
+import os
 import os.path as osp
 import math
 
@@ -17,7 +18,13 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 
 
 CWPQ_TEMP = 10.0
-CRR_TEMP = 1.0
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class SACAgent(object):
@@ -307,7 +314,8 @@ class SACAgent(object):
 
             steps_so_far = iters_so_far if self.hps.offline else iters_so_far * self.hps.rollout_len
             _lr = self.actr_sched.step(steps_so_far=steps_so_far)
-            logger.info(f"lr is {_lr} after {iters_so_far} iters")
+            if DEBUG:
+                logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
             if self.hps.use_adaptive_alpha:
                 alpha_loss = (self.log_alpha * (-log_prob - self.targ_ent).detach()).mean()
@@ -316,7 +324,8 @@ class SACAgent(object):
                 self.log_alpha_opt.step()
                 metrics['alpha_loss'].append(alpha_loss)
 
-        logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
+        if DEBUG:
+            logger.info(f"alpha: {self.alpha}")  # leave this here, for sanity checks
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))

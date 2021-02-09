@@ -1,4 +1,5 @@
 from collections import defaultdict
+import os
 import os.path as osp
 from copy import copy
 
@@ -26,7 +27,14 @@ CRR_TEMP = 1.0
 AWR_TEMP = 0.05
 ADV_ESTIM_SAMPLES = 4
 ONE_SIDED_PEN = True
-RND_INNER_SCALE = 100.0
+RND_TEMP = 0.05
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class BCPAgent(object):
@@ -191,7 +199,7 @@ class BCPAgent(object):
 
         if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
-                self.hps.base_next_action == 'beta_theta_max_rnd'):
+                self.hps.base_next_action == 'beta_theta_max'):
             # Create RND networks
             self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
 
@@ -362,7 +370,7 @@ class BCPAgent(object):
         q_value = crit.QZ(_ob, ac)
         if compute_rnd:
             _rnd_score = self.rnd.get_int_rew(_ob, ac).view(ob.shape[0], num_repeat, 1)
-            rnd_score = 1.0 - torch.exp(-_rnd_score * RND_INNER_SCALE)
+            rnd_score = 1.0 - torch.exp(-_rnd_score / RND_TEMP)
         if not mc:
             if self.hps.use_c51:
                 q_value = q_value.matmul(self.c51_supp).unsqueeze(-1)
@@ -398,27 +406,29 @@ class BCPAgent(object):
 
         if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
-                self.hps.base_next_action == 'beta_theta_max_rnd'):
+                self.hps.base_next_action == 'beta_theta_max'):
             # Update the RND network
             self.rnd.update(batch)
-            logger.info("just updated the rnd estimate")
+            if DEBUG:
+                logger.info("just updated the rnd estimate")
             # Monitor associated rnd estimate
             metrics['rnd_score'].append(1.0 - torch.exp(-self.rnd.get_int_rew(state, action)))
 
         if self.hps.use_reward_averager:
             # Update the reward averager
-            ra_loss = F.smooth_l1_loss(self.reward_averager(state, action), reward)  # Huber loss
+            ra_loss = F.smooth_l1_loss(self.reward_averager(state, action, next_state), reward)  # Huber loss
             ra_grad_pen = self.grad_pen(
                 fa=self.reward_averager,
                 state=state,
                 action=action,
+                next_state=next_state,
             )
             ra_loss += self.hps.scale_ra_grad_pen * ra_grad_pen
             self.ra_opt.zero_grad()
             ra_loss.backward()
             self.ra_opt.step()
             # Override the reward tensor
-            reward = self.reward_averager(state, action)
+            reward = self.reward_averager(state, action, next_state)
 
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
@@ -440,9 +450,10 @@ class BCPAgent(object):
             next_action_policy = _ac[index].squeeze(1)
             with torch.no_grad():
                 _rnd_score = self.rnd.get_int_rew(next_state, next_action_policy)
-                _rnd_score = 1.0 - torch.exp(-_rnd_score * RND_INNER_SCALE)
+                _rnd_score = 1.0 - torch.exp(-_rnd_score * RND_TEMP)
                 _rnd = 1. * _rnd_score.gt(0.6)
-                logger.info(f"number of 1's in the uncertainty score: {_rnd.sum()}/{_rnd.shape[0]}")
+                if DEBUG:
+                    logger.info(f"number of 1's in the uncertainty score: {_rnd.sum()}/{_rnd.shape[0]}")
             next_action = (_rnd * next_action_behave) + ((1 - _rnd) * next_action_policy)
         else:
             raise ValueError("invalid next action selection method.")
@@ -727,7 +738,8 @@ class BCPAgent(object):
                 self.log_alpha_pri_opt.step()
                 metrics['alpha_pri_loss'].append(alpha_pri_loss)
 
-        logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
+        if DEBUG:
+            logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
         metrics['alpha_pri'].append(self.alpha_pri)
 
         # Piece #3: Add the new losses to the vanilla ones, i.e. the traditional TD errors to minimize
@@ -861,7 +873,8 @@ class BCPAgent(object):
         self.actr_opt.step()
 
         _lr = self.actr_sched.step(steps_so_far=iters_so_far)
-        logger.info(f"lr is {_lr} after {iters_so_far} iters")
+        if DEBUG:
+            logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
         if self.hps.cql_use_adaptive_alpha_ent:
             alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
@@ -870,25 +883,29 @@ class BCPAgent(object):
             self.log_alpha_ent_opt.step()
             metrics['alpha_ent_loss'].append(alpha_ent_loss)
 
-        logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
+        if DEBUG:
+            logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': _lr}
 
         return metrics, lrnows
 
-    def grad_pen(self, fa, state, action, std=10.0):
+    def grad_pen(self, fa, state, action, next_state, std=10.0):
         """Define the gradient penalty regularizer"""
         # Create the states to apply the contraint on
         eps_s = state.clone().detach().data.normal_(0, std)
         zeta_state = state + eps_s
         zeta_state.requires_grad = True
+        eps_ns = next_state.clone().detach().data.normal_(0, std)
+        zeta_next_state = next_state + eps_ns
+        zeta_next_state.requires_grad = True
         # Create the actions to apply the contraint on
         eps_a = action.clone().detach().data.normal_(0, std)
         zeta_action = action + eps_a
         zeta_action.requires_grad = True
         # Define the input(s) w.r.t. to take the gradient
-        inputs = [zeta_state, zeta_action]
+        inputs = [zeta_state, zeta_action, zeta_next_state]
         # Create the operation of interest
         score = fa(*inputs)
         # Get the gradient of this operation with respect to its inputs

@@ -28,6 +28,129 @@ from helpers import h5_util as H
 SKIP_TIMEOUT_TRANSITIONS = True
 
 
+def extract_dataset(args, env, dataset_path):
+    RMIN = np.infty
+    RMAX = -np.infty
+    # Ensure the environment possesses a dataset in the D4RL suite
+    assert hasattr(env, 'get_dataset')  # unique (a priori) to d4rl envs
+    # Load the offline dataset
+    _dataset = H.load_dict_h5py(dataset_path)
+    to_load_in_memory = copy(_dataset)
+    # Rename the keys to the ones the rest of the codebase use
+    to_load_in_memory['obs0'] = to_load_in_memory.pop('observations')
+    to_load_in_memory['acs'] = to_load_in_memory.pop('actions')
+    to_load_in_memory['rews'] = to_load_in_memory.pop('rewards')
+    to_load_in_memory['dones1'] = to_load_in_memory.pop('terminals')
+    # Augment with the 'obs1' key, adding the next observation in every transition
+    _obs0 = []
+    _acs = []
+    _obs1 = []
+    _acs1 = []
+    _rews = []
+    _dones1 = []
+    ep_step = 0
+    for i in range(to_load_in_memory['rews'].shape[0] - 1):  # key arbitrarily chosen
+        ob = to_load_in_memory['obs0'][i]
+        ac = to_load_in_memory['acs'][i]
+        next_ob = to_load_in_memory['obs0'][i+1]
+        next_ac = to_load_in_memory['acs'][i+1]
+        rew = to_load_in_memory['rews'][i]
+        done = bool(to_load_in_memory['dones1'][i])
+        # Treat termination cases appropriately
+        final_timestep = (ep_step == env._max_episode_steps - 1)
+        if SKIP_TIMEOUT_TRANSITIONS and final_timestep:
+            # Exclude transitions that terminate by timeout
+            ep_step = 0
+            continue
+        if done or final_timestep:
+            ep_step = 0
+        # Add the transition to the dataset
+        _obs0.append(ob)
+        _acs.append(ac)
+        _obs1.append(next_ob)
+        _acs1.append(next_ac)
+        RMIN = min(RMIN, rew)
+        RMAX = max(RMAX, rew)
+        _rews.append(rew)
+        _dones1.append(done)
+        ep_step += 1
+    # Overwrite the content of the dataset
+    to_load_in_memory['obs0'] = _obs0
+    to_load_in_memory['acs'] = _acs
+    to_load_in_memory['obs1'] = _obs1
+    to_load_in_memory['acs1'] = _acs1
+    to_load_in_memory['rews'] = _rews
+    to_load_in_memory['dones1'] = _dones1
+    # Wrap each value into a numpy array
+    to_load_in_memory = {k: np.array(v) for k, v in to_load_in_memory.items()}
+    ini_num_transitions = to_load_in_memory['rews'].shape[0]
+    logger.info(f"the dataset contains {ini_num_transitions} transitions")
+
+    # We now create a list of all the complete trajectories present in the dataset,
+    # calculate the Monte-Carlo return for each transition, and insert them with their own key.
+    # Initialize the list of complete trajectories in the dataset, and first trajectory to fill
+    trajectory_list = []
+    trajectory = defaultdict(list)
+    episode_step = 0
+    for i in range(to_load_in_memory['rews'].shape[0]):  # key arbitrarily chosen
+        # Define termination triggers, due to timeout or terminating the episode through the MDP
+        done_bool = bool(to_load_in_memory['dones1'][i])
+        final_timestep = (episode_step == env._max_episode_steps - 1)
+        # When arrived at the end of the episode, add the completed trajectory to the list
+        if done_bool or final_timestep:
+            episode_step = 0
+            np_trajectory = {}
+            for k in to_load_in_memory:
+                np_trajectory[k] = np.array(trajectory[k])
+            # Add a key for the MC return and populate it with it
+            np_trajectory['rets'] = discount(np_trajectory['rews'], args.gamma)
+            # Add the formated trajectory to the list of trajectories
+            trajectory_list.append(np_trajectory)
+            # Initialize the next trajectory
+            trajectory = defaultdict(list)
+        # Add the transition to the current trajectory's dictionaries
+        for k in to_load_in_memory:
+            trajectory[k].append(to_load_in_memory[k][i])
+        episode_step += 1
+    logger.info(f"the dataset contains {len(trajectory_list)} completed trajectories")
+    logger.info(f"the dataset contains {len(trajectory['rews'])} orphan transitions")  # key arbitrarily chosen
+
+    # Now that we have the Monte-Carlo returns associated with each transition of complete trajectories,
+    # we create a new dictionary containing only the data from these conplete trajectories, and leave
+    # the previous disctionaries intact, just in case we need them at some point.
+    # Note, if the last trajectory in the dataset is not complete (does not terminate), then it is discarded.
+    to_load_in_memory_only_completed = defaultdict(list)
+    for i in range(len(trajectory_list)):  # needs to be like this apparently, exception thing
+        for k in list(to_load_in_memory.keys()) + ['rets']:
+            to_load_in_memory_only_completed[k].extend(trajectory_list[i][k])
+    to_load_in_memory_only_completed = {k: np.array(v) for k, v in to_load_in_memory_only_completed.items()}
+    # Truncate the lists of the original dataset to only contain data from completed trajectories,
+    # which therefore only contain transitions augmented with Monte-Carlo returns.
+    for k in to_load_in_memory:
+        to_load_in_memory[k] = to_load_in_memory[k][:to_load_in_memory_only_completed[k].shape[0]]
+        # Verify that the slicing wroked as intended
+        assert np.all(to_load_in_memory_only_completed[k] == to_load_in_memory[k]), "size issue."
+    new_num_transitions = to_load_in_memory['rews'].shape[0]
+    logger.info(f"the dataset contains {new_num_transitions} transitions after removing orphans")
+    # Now that they are the same size, directly transfer the the  'rets' key and value to the original dataset
+    to_load_in_memory['rets'] = to_load_in_memory_only_completed['rets']
+
+    # Carry out anity-check on the shapes of what's in the dataset
+    canon_size = to_load_in_memory['rews'].shape[0]  # key arbitrarily chosen
+    for k, v in to_load_in_memory.items():
+        logger.info(f"key({k}) -> shape({v.shape})")
+        assert v.shape[0] == canon_size
+
+    # Summarize the changes
+    logger.info(f"the dataset went through these size changes: {ini_num_transitions} -> {new_num_transitions}")
+    # Define new memory size
+    logger.info(f"over-writting memory size: {copy(args.mem_size)} -> {new_num_transitions}")
+    # Log the range of the reward signal in the dataset
+    logger.info(f"RMIN={RMIN}, RMAX={RMAX}")
+
+    return to_load_in_memory, new_num_transitions
+
+
 def train(args):
     """Train an agent"""
 
@@ -70,128 +193,54 @@ def train(args):
     # Create environment
     env = make_env(args.env_id, worker_seed)
 
-    RMIN = np.infty
-    RMAX = -np.infty
-
     if args.offline:
-        # Ensure the environment possesses a dataset in the D4RL suite
-        assert hasattr(env, 'get_dataset')  # unique (a priori) to d4rl envs
-        # Load the offline dataset
-        _dataset = H.load_dict_h5py(args.dataset_path)
-        to_load_in_memory = copy(_dataset)
-        # Rename the keys to the ones the rest of the codebase use
-        to_load_in_memory['obs0'] = to_load_in_memory.pop('observations')
-        to_load_in_memory['acs'] = to_load_in_memory.pop('actions')
-        to_load_in_memory['rews'] = to_load_in_memory.pop('rewards')
-        to_load_in_memory['dones1'] = to_load_in_memory.pop('terminals')
-        # Augment with the 'obs1' key, adding the next observation in every transition
-        _obs0 = []
-        _acs = []
-        _obs1 = []
-        _acs1 = []
-        _rews = []
-        _dones1 = []
-        ep_step = 0
-        for i in range(to_load_in_memory['rews'].shape[0] - 1):  # key arbitrarily chosen
-            ob = to_load_in_memory['obs0'][i]
-            ac = to_load_in_memory['acs'][i]
-            next_ob = to_load_in_memory['obs0'][i+1]
-            next_ac = to_load_in_memory['acs'][i+1]
-            rew = to_load_in_memory['rews'][i]
-            done = bool(to_load_in_memory['dones1'][i])
-            # Treat termination cases appropriately
-            final_timestep = (ep_step == env._max_episode_steps - 1)
-            if SKIP_TIMEOUT_TRANSITIONS and final_timestep:
-                # Exclude transitions that terminate by timeout
-                ep_step = 0
-                continue
-            if done or final_timestep:
-                ep_step = 0
-            # Add the transition to the dataset
-            _obs0.append(ob)
-            _acs.append(ac)
-            _obs1.append(next_ob)
-            _acs1.append(next_ac)
-            RMIN = min(RMIN, rew)
-            RMAX = max(RMAX, rew)
-            _rews.append(rew)
-            _dones1.append(done)
-            ep_step += 1
-        # Overwrite the content of the dataset
-        to_load_in_memory['obs0'] = _obs0
-        to_load_in_memory['acs'] = _acs
-        to_load_in_memory['obs1'] = _obs1
-        to_load_in_memory['acs1'] = _acs1
-        to_load_in_memory['rews'] = _rews
-        to_load_in_memory['dones1'] = _dones1
-        # Wrap each value into a numpy array
-        to_load_in_memory = {k: np.array(v) for k, v in to_load_in_memory.items()}
-        ini_num_transitions = to_load_in_memory['rews'].shape[0]
-        logger.info(f"the dataset contains {ini_num_transitions} transitions")
 
-        # We now create a list of all the complete trajectories present in the dataset,
-        # calculate the Monte-Carlo return for each transition, and insert them with their own key.
-        # Initialize the list of complete trajectories in the dataset, and first trajectory to fill
-        trajectory_list = []
-        trajectory = defaultdict(list)
-        episode_step = 0
-        for i in range(to_load_in_memory['rews'].shape[0]):  # key arbitrarily chosen
-            # Define termination triggers, due to timeout or terminating the episode through the MDP
-            done_bool = bool(to_load_in_memory['dones1'][i])
-            final_timestep = (episode_step == env._max_episode_steps - 1)
-            # When arrived at the end of the episode, add the completed trajectory to the list
-            if done_bool or final_timestep:
-                episode_step = 0
-                np_trajectory = {}
-                for k in to_load_in_memory:
-                    np_trajectory[k] = np.array(trajectory[k])
-                # Add a key for the MC return and populate it with it
-                np_trajectory['rets'] = discount(np_trajectory['rews'], args.gamma)
-                # Add the formated trajectory to the list of trajectories
-                trajectory_list.append(np_trajectory)
-                # Initialize the next trajectory
-                trajectory = defaultdict(list)
-            # Add the transition to the current trajectory's dictionaries
-            for k in to_load_in_memory:
-                trajectory[k].append(to_load_in_memory[k][i])
-            episode_step += 1
-        logger.info(f"the dataset contains {len(trajectory_list)} completed trajectories")
-        logger.info(f"the dataset contains {len(trajectory['rews'])} orphan transitions")  # key arbitrarily chosen
-
-        # Now that we have the Monte-Carlo returns associated with each transition of complete trajectories,
-        # we create a new dictionary containing only the data from these conplete trajectories, and leave
-        # the previous disctionaries intact, just in case we need them at some point.
-        # Note, if the last trajectory in the dataset is not complete (does not terminate), then it is discarded.
-        to_load_in_memory_only_completed = defaultdict(list)
-        for i in range(len(trajectory_list)):  # needs to be like this apparently, exception thing
-            for k in list(to_load_in_memory.keys()) + ['rets']:
-                to_load_in_memory_only_completed[k].extend(trajectory_list[i][k])
-        to_load_in_memory_only_completed = {k: np.array(v) for k, v in to_load_in_memory_only_completed.items()}
-        # Truncate the lists of the original dataset to only contain data from completed trajectories,
-        # which therefore only contain transitions augmented with Monte-Carlo returns.
-        for k in to_load_in_memory:
-            to_load_in_memory[k] = to_load_in_memory[k][:to_load_in_memory_only_completed[k].shape[0]]
-            # Verify that the slicing wroked as intended
-            assert np.all(to_load_in_memory_only_completed[k] == to_load_in_memory[k]), "size issue."
-        new_num_transitions = to_load_in_memory['rews'].shape[0]
-        logger.info(f"the dataset contains {new_num_transitions} transitions after removing orphans")
-        # Now that they are the same size, directly transfer the the  'rets' key and value to the original dataset
-        to_load_in_memory['rets'] = to_load_in_memory_only_completed['rets']
-
-        # Carry out anity-check on the shapes of what's in the dataset
-        canon_size = to_load_in_memory['rews'].shape[0]  # key arbitrarily chosen
-        for k, v in to_load_in_memory.items():
-            logger.info(f"key({k}) -> shape({v.shape})")
-            assert v.shape[0] == canon_size
-
-        # Summarize the changes
-        logger.info(f"the dataset went through these size changes: {ini_num_transitions} -> {new_num_transitions}")
-        # Define new memory size
-        logger.info(f"over-writting memory size: {copy(args.mem_size)} -> {new_num_transitions}")
+        # Extract the dataset from the archive
+        to_load_in_memory, new_num_transitions = extract_dataset(args, env, args.dataset_path)
         # Overwrite the memory size hyper-parameter in the offline setting
         args.mem_size = new_num_transitions
-        # Log the range of the reward signal in the dataset
-        logger.info(f"RMIN={RMIN}, RMAX={RMAX}")
+
+        if args.mix_with_random:
+            # Extract the dataset containing random data from the same environment
+            assert 0. <= args.mixing_ratio <= 1., "ratio must be between 0 and 1 (bounds included)."
+            dpath = args.dataset_path
+            filename = dpath.split('/')[-1]
+            filename_no_ext, file_ext = filename.split('.')
+            splits = filename_no_ext.split('-')
+            version_suffix = splits[-1]
+            env_name = splits[0]
+            assert env_name in ['halfcheetah', 'hopper', 'walker2d']
+            env_type = splits[1:-1]
+            assert 'expert' in env_type, "environment name must contain 'expert'."
+            new_env = '-'.join([env_name, 'random', version_suffix])
+            _new_path = '/' + os.path.join(*dpath.split('/')[:-1], new_env + '.' + file_ext)
+            _new_env = make_env(new_env, worker_seed)
+            new_to_load_in_memory, _ = extract_dataset(args, _new_env, _new_path)
+
+            # Sanity-check: verify that the keys coincide
+            assert list(to_load_in_memory.keys()) == list(new_to_load_in_memory.keys()), "keys mismatch."
+            # Shuffle both datasets, which uses the previously-set random seed
+            for k in to_load_in_memory:
+                # Numpy's shuffle operations are in-place, and by default only along the first axis
+                random.Random(args.seed).shuffle(to_load_in_memory[k])
+                random.Random(args.seed).shuffle(new_to_load_in_memory[k])
+            # Note, we verified that the two datasets have the same keys right above
+
+            # Merge the datasets
+            highest_index = to_load_in_memory['rews'].shape[0] * args.mixing_ratio  # key arbitrarily chosen
+            highest_index = min(int(np.floor(highest_index)), new_to_load_in_memory['rews'].shape[0])  # same
+            for k in to_load_in_memory.keys():
+                old_size = to_load_in_memory[k].shape[0]
+                to_load_in_memory[k] = np.concatenate([to_load_in_memory[k][highest_index:, ...],
+                                                       new_to_load_in_memory[k][0:highest_index, ...]], axis=0)
+                new_size = to_load_in_memory[k].shape[0]
+                assert new_size == old_size, "size mismatch."
+                logger.info(f"post-merge | key({k}) -> shape({to_load_in_memory[k].shape})")
+
+            # Schuffle the assembled dataset
+            for k in to_load_in_memory.keys():
+                # Numpy's shuffle operations are in-place, and by default only along the first axis
+                random.Random(args.seed).shuffle(to_load_in_memory[k])
     else:
         to_load_in_memory = None
 

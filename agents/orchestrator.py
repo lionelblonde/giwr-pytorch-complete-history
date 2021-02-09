@@ -17,6 +17,13 @@ from helpers.opencv_util import record_video
 
 BRAC_BEHAV_STEPS = 25_000  # note: this has nothing to do with 'warm-starting with behavioral cloning'
 
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 1)
+
 
 def rollout_generator(env, agent, rollout_len, use_noise_process):
 
@@ -253,7 +260,7 @@ def learn(args,
     agent = agent_wrapper()
 
     # Create context manager that records the time taken by encapsulated ops
-    timed = timed_cm_wrapper(logger)
+    timed = timed_cm_wrapper(logger, use=DEBUG)
 
     # Start clocks
     num_iters = int(args.num_steps) if args.offline else int(args.num_steps) // args.rollout_len
@@ -322,7 +329,8 @@ def learn(args,
 
     while iters_so_far <= num_iters:
 
-        log_iter_info(logger, iters_so_far, num_iters, tstart)
+        if iters_so_far % 100 == 0 or DEBUG:
+            log_iter_info(logger, iters_so_far, num_iters, tstart)
 
         # if iters_so_far % 20 == 0:
         #     # Check if the mpi workers are still synced

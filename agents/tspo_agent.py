@@ -1,4 +1,5 @@
 from collections import defaultdict
+import os
 import os.path as osp
 
 import numpy as np
@@ -19,6 +20,13 @@ CWPQ_TEMP = 10.0
 BCP_TEMP = 1.0
 ADV_ESTIM_SAMPLES = 4
 ONE_SIDED_PEN = True
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class TSPOAgent(object):
@@ -512,7 +520,8 @@ class TSPOAgent(object):
         self.log_alpha_ent_opt.step()
 
         _lr = self.actr_sched.step(steps_so_far=iters_so_far)
-        logger.info(f"lr is {_lr} after {iters_so_far} iters")
+        if DEBUG:
+            logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
         # Update target nets
         self.update_target_net()

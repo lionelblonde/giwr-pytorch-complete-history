@@ -1,4 +1,5 @@
 from collections import defaultdict
+import os
 import os.path as osp
 
 import numpy as np
@@ -17,7 +18,13 @@ from agents.nets import perception_stack_parser, TanhGaussActor, Critic
 ALPHA_PRI_CLAMPS = [0., 1_000_000.]
 CQL_TEMP = 1.0
 CWPQ_TEMP = 10.0
-CRR_TEMP = 1.0
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class CQLAgent(object):
@@ -350,7 +357,8 @@ class CQLAgent(object):
         self.actr_opt.step()
 
         _lr = self.actr_sched.step(steps_so_far=iters_so_far)
-        logger.info(f"lr is {_lr} after {iters_so_far} iters")
+        if DEBUG:
+            logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
         if self.hps.cql_use_adaptive_alpha_ent:
             alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
@@ -359,7 +367,8 @@ class CQLAgent(object):
             self.log_alpha_ent_opt.step()
             metrics['alpha_ent_loss'].append(alpha_ent_loss)
 
-        logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
+        if DEBUG:
+            logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
@@ -507,7 +516,8 @@ class CQLAgent(object):
                 self.log_alpha_pri_opt.step()
                 metrics['alpha_pri_loss'].append(alpha_pri_loss)
 
-            logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
+            if DEBUG:
+                logger.info(f"alpha_pri: {self.alpha_pri}")  # leave this here, for sanity checks
 
         # Piece #3: Add the new losses to the vanilla ones, i.e. the traditional TD errors to minimize
         crit_loss += min_crit_loss

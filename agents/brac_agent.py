@@ -1,4 +1,5 @@
 from collections import deque, defaultdict
+import os
 import os.path as osp
 
 import numpy as np
@@ -18,7 +19,13 @@ ALPHA_DIV_CLAMPS = [0., 500.]
 TARG_DIV = 0.
 BC_TRAINING_STEPS_PER_BATCH = 10
 CWPQ_TEMP = 10.0
-CRR_TEMP = 1.0
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class BRACAgent(object):
@@ -376,7 +383,8 @@ class BRACAgent(object):
             self.actr_opt.step()
 
             _lr = self.actr_sched.step(steps_so_far=iters_so_far)
-            logger.info(f"lr is {_lr} after {iters_so_far} iters")
+            if DEBUG:
+                logger.info(f"lr is {_lr} after {iters_so_far} iters")
 
             if self.hps.brac_use_adaptive_alpha_ent:
                 alpha_ent_loss = (self.log_alpha_ent * (-log_prob - self.targ_ent).detach()).mean()
@@ -390,8 +398,9 @@ class BRACAgent(object):
                 alpha_div_loss.backward()
                 self.log_alpha_div_opt.step()
 
-            logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
-            logger.info(f"alpha_div: {self.alpha_div}")  # leave this here, for sanity checks
+            if DEBUG:
+                logger.info(f"alpha_ent: {self.alpha_ent}")  # leave this here, for sanity checks
+                logger.info(f"alpha_div: {self.alpha_div}")  # leave this here, for sanity checks
 
         # Compute QZ estimate
         q = self.denorm_rets(self.crit.QZ(state, action))
