@@ -8,6 +8,7 @@ import hashlib
 import time
 
 import pandas as pd
+import seaborn as sb
 import numpy as np
 import matplotlib
 matplotlib.use("TkAgg")
@@ -17,16 +18,7 @@ import matplotlib.font_manager as fm  # noqa
 from helpers.math_util import smooth_out_w_ema  # noqa
 
 
-parser = argparse.ArgumentParser(description="Plotter")
-parser.add_argument('--font', type=str, default='Colfax')
-parser.add_argument('--dir', type=str, default=None, help='csv files location')
-parser.add_argument('--xcolkey', type=str, default=None, help='name of the X column')
-parser.add_argument('--ycolkey', type=str, default=None, help='name of the Y column')
-parser.add_argument('--stdfrac', type=float, default=1., help='std envelope fraction')
-args = parser.parse_args()
-
-
-def plot(args):
+def plot(args, dest_dir, ycolkey, barplot):
 
     # Font (must be first)
     font_dir = "/Users/lionelblonde/Library/Fonts/"
@@ -42,47 +34,20 @@ def plot(args):
         f4 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Medium.otf'), size=16)
     else:
         raise ValueError("invalid font")
-    # Create unique destination dir name
-    hash_ = hashlib.sha1()
-    hash_.update(str(time.time()).encode('utf-8'))
-    dest_dir = "plots/batchplots_{}".format(hash_.hexdigest()[:20])
-    os.makedirs(dest_dir, exist_ok=False)
+
     # Palette
-    # curves = [
-    #     'xkcd:sky blue',
-    #     'xkcd:pinkish brown',
-    #     'xkcd:maize',
-    #     'xkcd:wisteria',
-    #     'xkcd:mango',
-    #     'xkcd:bubblegum',
-    #     'xkcd:turtle green',
-    #     'xkcd:peacock blue',
-    #     'xkcd:orangered',
-    #     'xkcd:camo green',
-    #     'xkcd:petrol',
-    #     'xkcd:pea soup',
-    # ]
-    curves = [
-        (39, 181, 234),
-        (107, 64, 216),
-        (239, 65, 70),
-        (244, 172, 54),
-        (104, 222, 122),
-    ]
     palette = {
         'grid': (231, 234, 236),
-        'face': (255, 255, 255),  # (245, 249, 249)
+        'face': (255, 255, 255),
         'axes': (200, 200, 208),
         'font': (108, 108, 126),
         'symbol': (64, 68, 82),
         'expert': (0, 0, 0),
-        'curves': curves,
+        'curves': sb.color_palette(),
     }
     for k, v in palette.items():
         if k != 'curves':
             palette[k] = tuple(float(e) / 255. for e in v)
-
-    palette['curves'] = [tuple(float(e) / 255. for e in c) for c in v]
 
     # Figure color
     plt.rcParams['axes.facecolor'] = palette['face']
@@ -104,8 +69,9 @@ def plot(args):
     xcol_dump = defaultdict(list)
     ycol_dump = defaultdict(list)
     color_map = defaultdict(str)
-    dirs = [d.split('/')[-1] for d in glob.glob("{}/*".format(args.dir))]
-    print("pulling logs from sub-directories: {}".format(dirs))
+    text_map = defaultdict(str)
+    dirs = [d.split('/')[-1] for d in glob.glob(f"{args.dir}/*")]
+    print(f"pulling logs from sub-directories: {dirs}")
     dirs.sort()
     dnames = deepcopy(dirs)
     dirs = ["{}/{}".format(args.dir, d) for d in dirs]
@@ -115,10 +81,9 @@ def plot(args):
 
     for d in dirs:
 
-        path = "{}/*/progress.csv".format(d)
+        path = f"{d}/*/progress.csv"
 
         for fname in glob.glob(path):
-            print("fname: {}".format(fname))
             # Extract the expriment name from the file's full path
             experiment_name = fname.split('/')[-2]
             # Remove what comes after the uuid
@@ -128,16 +93,18 @@ def plot(args):
             # Load data from the CSV file
             data = pd.read_csv(fname,
                                skipinitialspace=True,
-                               usecols=[args.xcolkey, args.ycolkey])
+                               usecols=[args.xcolkey, ycolkey])
             data.fillna(0.0, inplace=True)
             # Retrieve the desired columns from the data
             xcol = data[args.xcolkey].to_numpy()
-            ycol = data[args.ycolkey].to_numpy()
+            ycol = data[ycolkey].to_numpy()
             # Add the experiment's data to the dictionary
             xcol_dump[key].append(xcol)
             ycol_dump[key].append(ycol)
             # Add color
             color_map[key] = colors[d]
+            # Add text
+            text_map[key] = fname.split('/')[-3]
 
     for k, v in experiment_map.items():
         print(k, v)
@@ -147,9 +114,9 @@ def plot(args):
 
     # Display summary of the extracted data
     assert len(xcol_dump.keys()) == len(ycol_dump.keys())  # then use X col arbitrarily
-    print("summary -> {} different keys.".format(len(xcol_dump.keys())))
+    print(f"summary -> {len(xcol_dump.keys())} different keys.")
     for i, key in enumerate(xcol_dump.keys()):
-        print(">>>> [key #{}] {} | #values: {}".format(i, key, len(xcol_dump[key])))
+        print(f">>>> [key #{i}] {key} | #values: {len(xcol_dump[key])}")
 
     print("\n>>>>>>>>>>>>>>>>>>>> Visualizing.")
 
@@ -157,7 +124,7 @@ def plot(args):
     texts.sort()
     texts = [text.split('__')[-1] for text in texts]
     num_cols = len(texts)  # noqa
-    print("Legend's texts (ordered): {}".format(texts))
+    print(f"Legend's texts (ordered): {texts}")
 
     patches = [plt.plot([],
                         [],
@@ -199,12 +166,17 @@ def plot(args):
         ax.spines['left'].set_color(palette['axes'])
         ax.spines['bottom'].set_color(palette['axes'])
 
+        if barplot:
+            bars = {}
+            bars_errors = {}
+            bars_colors = {}
+
         # Go over the experiments and plot for each on the same subplot
         for i, key in enumerate(experiment_map[env]):
 
             xmax = deepcopy(xmaxes[key])
 
-            print(">>>> {}, in color RGB={}".format(key, color_map[key]))
+            print(f">>>> {key}, in color RGB={color_map[key]}")
 
             if len(ycol_dump[key]) > 1:
                 # Calculate statistics to plot
@@ -215,28 +187,48 @@ def plot(args):
                 WEIGHT = 0.85
                 smooth_mean = np.array(smooth_out_w_ema(mean, weight=WEIGHT))
                 smooth_std = np.array(smooth_out_w_ema(std, weight=WEIGHT))
-                ax.plot(xcol_dump[key][0][0:xmax], smooth_mean, color=color_map[key], alpha=0.8)
-                ax.fill_between(xcol_dump[key][0][0:xmax],
-                                smooth_mean - (args.stdfrac * smooth_std),
-                                smooth_mean + (args.stdfrac * smooth_std),
-                                facecolor=color_map[key],
-                                alpha=0.25)
+
+                if barplot:
+                    bars[text_map[key]] = smooth_mean[-1]
+                    bars_errors[text_map[key]] = smooth_std[-1]
+                    bars_colors[text_map[key]] = color_map[key]
+                else:
+                    ax.plot(xcol_dump[key][0][0:xmax], smooth_mean, color=color_map[key], alpha=1.0)
+                    ax.fill_between(xcol_dump[key][0][0:xmax],
+                                    smooth_mean - (args.stdfrac * smooth_std),
+                                    smooth_mean + (args.stdfrac * smooth_std),
+                                    facecolor=color_map[key],
+                                    alpha=0.2)
             else:
-                ax.plot(xcol_dump[key][0], ycol_dump[key][0])
+                if not barplot:
+                    ax.plot(xcol_dump[key][0], ycol_dump[key][0])
+                else:
+                    pass
+
+        if barplot:
+            ax.bar(x=[v.split('__')[-1] for v in sorted(set(list(text_map.values())))],
+                   height=[bars[k] for k in sorted(list(bars.keys()))],
+                   yerr=[bars_errors[k] for k in sorted(list(bars_errors.keys()))],
+                   color=[bars_colors[k] for k in sorted(list(bars_colors.keys()))],
+                   width=1.0,
+                   alpha=1.0,
+                   capsize=5)
 
         # Create the axes labels
         ax.tick_params(width=0.2, length=1, pad=1, colors=palette['axes'], labelcolor=palette['font'])
-        ax.ticklabel_format(axis='x', style='sci', scilimits=(-5, 5), useOffset=(False), useMathText=True)
+        if not barplot:
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(-5, 5), useOffset=(False), useMathText=True)
         ax.xaxis.offsetText.set_fontproperties(f1)
         ax.xaxis.offsetText.set_position((0.95, 0))
         for tick in ax.get_xticklabels():
             tick.set_fontproperties(f1)
         for tick in ax.get_yticklabels():
             tick.set_fontproperties(f1)
-        ax.set_xlabel("Timesteps", color=palette['font'], fontproperties=f3)  # , labelpad=6
+        if not barplot:
+            ax.set_xlabel("Timesteps", color=palette['font'], fontproperties=f3)  # , labelpad=6
         ax.set_ylabel("Episodic Return", color=palette['font'], fontproperties=f3)  # , labelpad=12
         # Create title
-        ax.set_title("{}".format(env), color=palette['font'], fontproperties=f4, pad=-10)
+        ax.set_title(f"{env}", color=palette['font'], fontproperties=f4, pad=-10)
 
     # Create legend
     legend = fig.legend(
@@ -255,13 +247,31 @@ def plot(args):
     fig.set_tight_layout(True)
 
     # Save figure to disk
-    plt.savefig("{}/plots_{}.pdf".format(dest_dir, args.ycolkey),
-                format='pdf', bbox_inches='tight')
-    print("mean plot done for env {}.".format(env))
+    plt.savefig(f"{dest_dir}/plots_{ycolkey}_{'barplot' if barplot else 'plot'}.pdf",
+                format='pdf',
+                bbox_inches='tight')
+    print(f"mean plot done for env {env}.")
 
-    print(">>>>>>>>>>>>>>>>>>>> Bye.")
+    print(">>>>>>>>>>>>>>>>>>>> bye.")
 
 
 if __name__ == "__main__":
+    # Parse
+    parser = argparse.ArgumentParser(description="Plotter")
+    parser.add_argument('--font', type=str, default='Colfax')
+    parser.add_argument('--dir', type=str, default=None, help='csv files location')
+    parser.add_argument('--xcolkey', type=str, default=None, help='name of the X column')
+    parser.add_argument('--ycolkeys', nargs='+', type=str, default=None, help='name of the Y column')
+    parser.add_argument('--stdfrac', type=float, default=1., help='std envelope fraction')
+    args = parser.parse_args()
+
+    # Create unique destination dir name
+    hash_ = hashlib.sha1()
+    hash_.update(str(time.time()).encode('utf-8'))
+    dest_dir = f"plots/batchplots_{hash_.hexdigest()[:20]}"
+    os.makedirs(dest_dir, exist_ok=False)
+
     # Plot
-    plot(args)
+    for ycolkey in args.ycolkeys:
+        plot(args, dest_dir=dest_dir, ycolkey=ycolkey, barplot=False)
+        plot(args, dest_dir=dest_dir, ycolkey=ycolkey, barplot=True)
