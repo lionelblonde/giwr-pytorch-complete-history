@@ -16,6 +16,7 @@ from helpers.math_util import huber_quant_reg_loss
 from helpers.math_util import LRScheduler
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import perception_stack_parser, TanhGaussActor, MixtureTanhGaussActor, Critic, RewardAverager
+from agents.nets import ActorPhi, ActorVAE
 from agents.rnd import RandomNetworkDistillation
 
 
@@ -27,7 +28,7 @@ CRR_TEMP = 1.0
 AWR_TEMP = 0.05
 ADV_ESTIM_SAMPLES = 4
 ONE_SIDED_PEN = True
-RND_TEMP = 0.05
+RND_TEMP = 0.06
 
 debug_lvl = os.environ.get('DEBUG_LVL', 0)
 try:
@@ -135,6 +136,12 @@ class BCPAgent(object):
         _hps.use_qr = False
         self.mc_crit = Critic(self.env, _hps, self.rms_obs, hidden_dims[1]).to(self.device)
 
+        if 'bc' in self.hps.base_next_action:
+            self.bc_vae = ActorVAE(self.env, self.hps, self.rms_obs, [750, 750]).to(self.device)
+            if 'bcq' in self.hps.base_next_action:
+                self.bcq_perturb = ActorPhi(self.env, self.hps, self.rms_obs, [400, 300]).to(self.device)
+            # Note, we do not sync these networks across parallel workers
+
         self.hps.use_adaptive_alpha = None  # unused in this algorithm, make sure it can not interfere
         # Common trick: rewrite the Lagrange multiplier alpha as log(w), and optimize for w
         if self.hps.cql_use_adaptive_alpha_ent:
@@ -189,6 +196,13 @@ class BCPAgent(object):
             self.log_alpha_pri_opt = torch.optim.Adam([self.log_alpha_pri],
                                                       lr=self.hps.critic_lr)
 
+        if 'bc' in self.hps.base_next_action:
+            self.bc_vae_opt = torch.optim.Adam(self.bc_vae.parameters(),
+                                               lr=self.hps.behavior_lr)
+            if 'bcq' in self.hps.base_next_action:
+                self.bcq_perturb_opt = torch.optim.Adam(self.bcq_perturb.parameters(),
+                                                        lr=self.hps.actor_lr)
+
         # Set up lr scheduler
         self.actr_sched = LRScheduler(
             optimizer=self.actr_opt,
@@ -199,7 +213,7 @@ class BCPAgent(object):
 
         if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
-                self.hps.base_next_action == 'beta_theta_max'):
+                'rnd' in self.hps.base_next_action):
             # Create RND networks
             self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
 
@@ -406,7 +420,7 @@ class BCPAgent(object):
 
         if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
-                self.hps.base_next_action == 'beta_theta_max'):
+                'rnd' in self.hps.base_next_action):
             # Update the RND network
             self.rnd.update(batch)
             if DEBUG:
@@ -433,27 +447,98 @@ class BCPAgent(object):
         action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
         log_prob = self.actr.logp(state, action_from_actr)
 
-        if self.hps.base_next_action == 'beta':  # sarsa
-            next_action = torch.Tensor(batch['acs1']).to(self.device)
-        elif self.hps.base_next_action == 'theta':  # normal
+        # Update the networks needed to assemble the next action (if needed)
+        if 'bc' in self.hps.base_next_action:
+            # self.bc_vae
+            recon, mean, std = self.bc_vae(state, action)
+            recon_loss = F.mse_loss(recon, action)
+            kl_loss = -0.5 * (1 + std.pow(2).log() - mean.pow(2) - std.pow(2)).mean()
+            # Note, the previous is just the closed form kl divergence for the normal distribution
+            bc_vae_loss = recon_loss + (0.5 * kl_loss)
+            self.bc_vae_opt.zero_grad()
+            bc_vae_loss.backward()
+            self.bc_vae_opt.step()
+            if 'bcq' in self.hps.base_next_action:
+                # self.bcq_perturb
+                action_from_bc_vae = self.bc_vae.decode(state)
+                bcq_perturb_loss = -self.crit.QZ(state, self.bcq_perturb.act(state, action_from_bc_vae)).mean()
+                self.bcq_perturb_opt.zero_grad()
+                bcq_perturb_loss.backward(retain_graph=True)
+                self.bcq_perturb_opt.step()
+
+        # Select next action
+        if self.hps.base_next_action == 'theta':  # SAC, etc. (standard in actor critic with stochastic policies)
             next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
-        elif self.hps.base_next_action == 'theta_max':  # emaq
-            _ac, _ = self.ac_factory(self.actr, next_state, 10)
-            _q = self.q_factory(self.crit, next_state, _ac)  # shape: batch_size, 10, 1
-            index = _q.argmax(1)
-            next_action = _ac[index].squeeze(1)
-        elif self.hps.base_next_action == 'beta_theta_max':  # spibb, brpo almost
-            next_action_behave = torch.Tensor(batch['acs1']).to(self.device)
+        elif self.hps.base_next_action == 'beta_sarsa':  # SARSA
+            next_action = torch.Tensor(batch['acs1']).to(self.device)
+        elif self.hps.base_next_action == 'beta_bc':  # Expected SARSA with a VAE
+            next_action = self.bc_vae.decode(next_state)
+        elif self.hps.base_next_action in [
+                'beta_bc_max',  # EMaQ
+                'beta_bcq_max',  # BCQ
+                ]:
+            _next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
+            _next_action = self.bc_vae.decode(_next_state)
+            if self.hps.base_next_action == 'beta_bcq_max':  # BCQ
+                # Perturb the action return by the VAE cloner
+                _next_action = self.bcq_perturb.act(_next_state, _next_action)
+            _q_prime = self.targ_crit.QZ(_next_state, _next_action)
+            if self.hps.clipped_double:
+                # Define QZ' as the minimum QZ value between TD3's twin QZ's
+                _twin_q_prime = self.targ_twin.QZ(_next_state, _next_action)
+                _q_prime = (self.hps.ensemble_q_lambda * torch.min(_q_prime, _twin_q_prime) +
+                            (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
+            # Take argmax over each action sampled
+            _argmax_next_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
+            _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size, 10, -1),
+                                               1,
+                                               _argmax_next_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim))
+            next_action = _argmax_next_action.squeeze(dim=1)
+        elif self.hps.base_next_action in [
+                'beta_bc_theta_max_rnd',  # BRPO, SPIBB
+                'beta_bc_max_theta_max_rnd',
+                'beta_bcq_max_theta_max_rnd',
+                ]:
+            # Assemble the 'theta_max' piece
             _ac, _ = self.ac_factory(self.actr, next_state, 10)
             _q = self.q_factory(self.crit, next_state, _ac)  # shape: batch_size, 10, 1
             index = _q.argmax(1)
             next_action_policy = _ac[index].squeeze(1)
+            # Assemble the 'rnd' piece
             with torch.no_grad():
                 _rnd_score = self.rnd.get_int_rew(next_state, next_action_policy)
-                _rnd_score = 1.0 - torch.exp(-_rnd_score * RND_TEMP)
+                _rnd_score = 1.0 - torch.exp(-_rnd_score / RND_TEMP)
                 _rnd = 1. * _rnd_score.gt(0.6)
                 if DEBUG:
                     logger.info(f"number of 1's in the uncertainty score: {_rnd.sum()}/{_rnd.shape[0]}")
+            # Assemble the 'beta_bc*' piece
+            if self.hps.base_next_action == 'beta_bc_theta_max_rnd':  # BRPO, SPIBB
+                next_action_behave = self.bc_vae.decode(next_state)
+            elif self.hps.base_next_action in [
+                        'beta_bc_max_theta_max_rnd',
+                        'beta_bcq_max_theta_max_rnd',
+                    ]:
+                _next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
+                _next_action = self.bc_vae.decode(_next_state)
+                if self.hps.base_next_action == 'beta_bcq_max_theta_max_rnd':
+                    # Perturb the action return by the VAE cloner
+                    _next_action = self.bcq_perturb.act(_next_state, _next_action)
+                _q_prime = self.targ_crit.QZ(_next_state, _next_action)
+                if self.hps.clipped_double:
+                    # Define QZ' as the minimum QZ value between TD3's twin QZ's
+                    _twin_q_prime = self.targ_twin.QZ(_next_state, _next_action)
+                    _q_prime = (self.hps.ensemble_q_lambda * torch.min(_q_prime, _twin_q_prime) +
+                                (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
+                # Take argmax over each action sampled
+                _argmax_next_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
+                _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size, 10, -1),
+                                                   1,
+                                                   _argmax_next_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim))
+                next_action_behave = _argmax_next_action.squeeze(dim=1)
+            else:
+                # This clause should not be needed, but here as safety net in case of codebase extension
+                raise ValueError("invalid next action selection method (in rnd block).")
+            # Assemble the 3 pieces
             next_action = (_rnd * next_action_behave) + ((1 - _rnd) * next_action_policy)
         else:
             raise ValueError("invalid next action selection method.")
@@ -959,9 +1044,17 @@ class BCPAgent(object):
         torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
             torch.save(self.twin.state_dict(), osp.join(path, f"twin_{iters_so_far}.pth"))
+        if 'bc' in self.hps.base_next_action:
+            torch.save(self.bc_vae.state_dict(), osp.join(path, f"bc_vae_{iters_so_far}.pth"))
+            if 'bcq' in self.hps.base_next_action:
+                torch.save(self.bcq_perturb.state_dict(), osp.join(path, f"bcq_perturb_{iters_so_far}.pth"))
 
     def load(self, path, iters_so_far):
         self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
         self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
         if self.hps.clipped_double:
             self.twin.load_state_dict(torch.load(osp.join(path, f"twin_{iters_so_far}.pth")))
+        if 'bc' in self.hps.base_next_action:
+            self.bc_vae.load_state_dict(torch.load(osp.join(path, f"bc_vae_{iters_so_far}.pth")))
+            if 'bcq' in self.hps.base_next_action:
+                self.bcq_perturb.load_state_dict(torch.load(osp.join(path, f"bcq_perturb_{iters_so_far}.pth")))
