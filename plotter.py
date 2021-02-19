@@ -206,7 +206,9 @@ def plot(args, dest_dir, ycolkey, barplot):
                     pass
 
         if barplot:
-            ax.bar(x=[v.split('__')[-1] for v in sorted(set(list(text_map.values())))],
+            PLOT_NAME = False  # XXX
+            ax.bar(x=[(v.split('__')[-1] if PLOT_NAME else v.split('__')[0])
+                      for v in sorted(set(list(text_map.values())))],
                    height=[bars[k] for k in sorted(list(bars.keys()))],
                    yerr=[bars_errors[k] for k in sorted(list(bars_errors.keys()))],
                    color=[bars_colors[k] for k in sorted(list(bars_colors.keys()))],

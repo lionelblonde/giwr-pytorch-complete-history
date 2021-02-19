@@ -420,6 +420,7 @@ class Spawner(object):
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
                 'targ_q_bonus': self.config.get('targ_q_bonus', None),
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
+                'base_tspo_action': self.config.get('base_tspo_action', 'none'),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
                 'use_temp_corr': self.config.get('use_temp_corr', True),
 
@@ -532,6 +533,7 @@ class Spawner(object):
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
                 'targ_q_bonus': self.config.get('targ_q_bonus', None),
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
+                'base_tspo_action': self.config.get('base_tspo_action', 'none'),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
                 'use_temp_corr': self.config.get('use_temp_corr', True),
 
@@ -599,11 +601,16 @@ class Spawner(object):
             bash_script_str += ('\n')
             # Load modules
             bash_script_str += ("module load GCC/8.3.0\n")
+            # bash_script_str += ("module load GCC/10.2.0\n")  # FIXME
+            # bash_script_str += ("module load GCC/9.3.0\n")  # FIXME
             bash_script_str += ("module load OpenMPI/3.1.4\n")
+            # bash_script_str += ("module load OpenMPI/4.0.3\n")  # FIXME
             if self.config['meta']['benchmark'] == 'd4rl':  # legacy comment: needed for dmc too
                 bash_script_str += ("module load Mesa/19.2.1\n")
+                # bash_script_str += ("module load Mesa/20.0.2\n")  # FIXME
             if self.config['resources']['cuda']:
                 bash_script_str += ("module load CUDA/11.1.1\n")
+                # bash_script_str += ("module load CUDA/10.0.130\n")  # FIXME
             bash_script_str += ('\n')
             # Launch command
             if self.args.deployment == 'slurm':
