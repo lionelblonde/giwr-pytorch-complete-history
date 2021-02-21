@@ -949,7 +949,26 @@ class BCPAgent(object):
 
                 # Select the TSPO action
                 # Note, we only allow the use of tspo with CRR variants, but it could be used anywhere
-                if 'bc' in self.hps.base_tspo_action:
+                if self.hps.base_tspo_action == 'theta':
+                    tspo_action = float(self.max_ac) * self.actr.sample(state, sg=True)
+                elif self.hps.base_tspo_action == 'theta_max':
+                    _state = torch.repeat_interleave(state, 10, 0)  # duplicate 10 times
+                    _tspo_action = float(self.max_ac) * self.actr.sample(_state, sg=True)
+                    _q_prime = self.targ_crit.QZ(_state, _tspo_action)
+                    if self.hps.clipped_double:
+                        # Define QZ' as the minimum QZ value between TD3's twin QZ's
+                        _twin_q_prime = self.targ_twin.QZ(_state, _tspo_action)
+                        _q_prime = (self.hps.ensemble_q_lambda * torch.min(_q_prime, _twin_q_prime) +
+                                    (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
+                    # Take argmax over each action sampled
+                    _argmax_tspo_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
+                    _argmax_tspo_action = torch.gather(
+                        _tspo_action.reshape(self.hps.batch_size, 10, -1),
+                        1,
+                        _argmax_tspo_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
+                    )
+                    tspo_action = _argmax_tspo_action.squeeze(dim=1)
+                elif 'bc' in self.hps.base_tspo_action:
                     if self.hps.base_tspo_action == 'beta_bc':  # Expected SARSA with a VAE
                         tspo_action = self.bc_vae.decode(state)
                     elif self.hps.base_tspo_action in [
