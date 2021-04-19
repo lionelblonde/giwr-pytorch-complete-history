@@ -472,7 +472,7 @@ class BCPAgent(object):
         if self.hps.base_next_action == 'theta':  # SAC, etc. (standard in actor critic with stochastic policies)
             next_action = float(self.max_ac) * self.actr.sample(next_state, sg=True)
         elif self.hps.base_next_action == 'theta_max':
-            _next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
+            _next_state = torch.repeat_interleave(next_state, self.hps.pe_state_inflate, 0)  # duplicate `m` times
             _next_action = float(self.max_ac) * self.actr.sample(_next_state, sg=True)
             _q_prime = self.targ_crit.QZ(_next_state, _next_action)
             if self.hps.clipped_double:
@@ -482,7 +482,9 @@ class BCPAgent(object):
                             (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
             # Take argmax over each action sampled
             _argmax_next_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
-            _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size, 10, -1),
+            _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size,
+                                                                    self.hps.pe_state_inflate,
+                                                                    -1),
                                                1,
                                                _argmax_next_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim))
             next_action = _argmax_next_action.squeeze(dim=1)
@@ -494,7 +496,7 @@ class BCPAgent(object):
                 'beta_bc_max',  # EMaQ
                 'beta_bcq_max',  # BCQ
                 ]:
-            _next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
+            _next_state = torch.repeat_interleave(next_state, self.hps.pe_state_inflate, 0)  # duplicate `m` times
             _next_action = self.bc_vae.decode(_next_state)
             if self.hps.base_next_action == 'beta_bcq_max':  # BCQ
                 # Perturb the action return by the VAE cloner
@@ -507,7 +509,9 @@ class BCPAgent(object):
                             (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
             # Take argmax over each action sampled
             _argmax_next_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
-            _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size, 10, -1),
+            _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size,
+                                                                    self.hps.pe_state_inflate,
+                                                                    -1),
                                                1,
                                                _argmax_next_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim))
             next_action = _argmax_next_action.squeeze(dim=1)
@@ -517,8 +521,8 @@ class BCPAgent(object):
                 'beta_bcq_max_theta_max_rnd',
                 ]:
             # Assemble the 'theta_max' piece
-            _ac, _ = self.ac_factory(self.actr, next_state, 10)
-            _q = self.q_factory(self.crit, next_state, _ac)  # shape: batch_size, 10, 1
+            _ac, _ = self.ac_factory(self.actr, next_state, self.hps.pe_state_inflate)
+            _q = self.q_factory(self.crit, next_state, _ac)  # shape: batch_size, m, 1
             index = _q.argmax(1)
             next_action_policy = _ac[index].squeeze(1)
             # Assemble the 'rnd' piece
@@ -535,7 +539,7 @@ class BCPAgent(object):
                         'beta_bc_max_theta_max_rnd',
                         'beta_bcq_max_theta_max_rnd',
                     ]:
-                _next_state = torch.repeat_interleave(next_state, 10, 0)  # duplicate 10 times
+                _next_state = torch.repeat_interleave(next_state, self.hps.pe_state_inflate, 0)  # duplicate `m` times
                 _next_action = self.bc_vae.decode(_next_state)
                 if self.hps.base_next_action == 'beta_bcq_max_theta_max_rnd':
                     # Perturb the action return by the VAE cloner
@@ -548,7 +552,9 @@ class BCPAgent(object):
                                 (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
                 # Take argmax over each action sampled
                 _argmax_next_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
-                _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size, 10, -1),
+                _argmax_next_action = torch.gather(_next_action.reshape(self.hps.batch_size,
+                                                                        self.hps.pe_state_inflate,
+                                                                        -1),
                                                    1,
                                                    _argmax_next_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim))
                 next_action_behave = _argmax_next_action.squeeze(dim=1)
@@ -951,6 +957,12 @@ class BCPAgent(object):
                 # Note, we only allow the use of tspo with CRR variants, but it could be used anywhere
                 if self.hps.base_tspo_action == 'theta':
                     tspo_action = float(self.max_ac) * self.actr.sample(state, sg=True)
+                    # Compute and add the TSPO loss contribution
+                    tspo_q = self.crit.QZ(state, tspo_action)
+                    tspo_adv = tspo_q - emp_adv_from_actr
+                    tspo_adv = torch.exp(tspo_adv / crr_temp).clamp(max=20.)
+                    actr_loss -= (self.hps.scale_second_stream_loss *
+                                  self.actr.logp(state, tspo_action) * tspo_adv.detach())
                 elif self.hps.base_tspo_action == 'theta_max':
                     _state = torch.repeat_interleave(state, 10, 0)  # duplicate 10 times
                     _tspo_action = float(self.max_ac) * self.actr.sample(_state, sg=True)
@@ -968,6 +980,12 @@ class BCPAgent(object):
                         _argmax_tspo_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
                     )
                     tspo_action = _argmax_tspo_action.squeeze(dim=1)
+                    # Compute and add the TSPO loss contribution
+                    tspo_q = self.crit.QZ(state, tspo_action)
+                    tspo_adv = tspo_q - emp_adv_from_actr
+                    tspo_adv = torch.exp(tspo_adv / crr_temp).clamp(max=20.)
+                    actr_loss -= (self.hps.scale_second_stream_loss *
+                                  self.actr.logp(state, tspo_action) * tspo_adv.detach())
                 elif 'bc' in self.hps.base_tspo_action:
                     if self.hps.base_tspo_action == 'beta_bc':  # Expected SARSA with a VAE
                         tspo_action = self.bc_vae.decode(state)
@@ -1166,6 +1184,8 @@ class BCPAgent(object):
             eval_param.data.copy_(param.data)
 
     def save(self, path, iters_so_far):
+        if self.hps.obs_norm:
+            torch.save(self.rms_obs.state_dict(), osp.join(path, f"rms_obs_{iters_so_far}.pth"))
         torch.save(self.actr.state_dict(), osp.join(path, f"actr_{iters_so_far}.pth"))
         torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
@@ -1176,6 +1196,8 @@ class BCPAgent(object):
                 torch.save(self.bcq_perturb.state_dict(), osp.join(path, f"bcq_perturb_{iters_so_far}.pth"))
 
     def load(self, path, iters_so_far):
+        if self.hps.obs_norm:
+            self.rms_obs.load_state_dict(torch.load(osp.join(path, f"rms_obs_{iters_so_far}.pth")))
         self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
         self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
         if self.hps.clipped_double:

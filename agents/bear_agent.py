@@ -522,6 +522,8 @@ class BEARAgent(object):
             eval_param.data.copy_(param.data)
 
     def save(self, path, iters_so_far):
+        if self.hps.obs_norm:
+            torch.save(self.rms_obs.state_dict(), osp.join(path, f"rms_obs_{iters_so_far}.pth"))
         torch.save(self.actr.state_dict(), osp.join(path, f"actr_{iters_so_far}.pth"))
         torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
@@ -529,6 +531,8 @@ class BEARAgent(object):
         torch.save(self.vae.state_dict(), osp.join(path, f"vae_{iters_so_far}.pth"))
 
     def load(self, path, iters_so_far):
+        if self.hps.obs_norm:
+            self.rms_obs.load_state_dict(torch.load(osp.join(path, f"rms_obs_{iters_so_far}.pth")))
         self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
         self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
         if self.hps.clipped_double:

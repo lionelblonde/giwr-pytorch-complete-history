@@ -426,6 +426,8 @@ class Spawner(object):
 
                 'mix_with_random': self.config.get('mix_with_random', False),
                 'mixing_ratio': self.config.get('mixing_ratio', 0.),
+
+                'pe_state_inflate': self.config.get('pe_state_inflate', 10),
             }
         else:
             # No search, fixed hyper-parameters
@@ -539,6 +541,8 @@ class Spawner(object):
 
                 'mix_with_random': self.config.get('mix_with_random', False),
                 'mixing_ratio': self.config.get('mixing_ratio', 0.),
+
+                'pe_state_inflate': self.config.get('pe_state_inflate', 10),
             }
 
         # Duplicate for each environment

@@ -28,10 +28,10 @@ def plot(args, dest_dir, ycolkey, barplot):
         f3 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Regular.otf'), size=14)
         f4 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Medium.otf'), size=16)
     elif args.font == 'SourceCodePro':
-        f1 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Light.otf'), size=12)
-        f2 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Regular.otf'), size=24)
-        f3 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Regular.otf'), size=14)
-        f4 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Medium.otf'), size=16)
+        f1 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Light.otf'), size=20)
+        f2 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Regular.otf'), size=32)
+        f3 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Regular.otf'), size=22)
+        f4 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Medium.otf'), size=24)
     else:
         raise ValueError("invalid font")
 
@@ -146,6 +146,12 @@ def plot(args, dest_dir, ycolkey, barplot):
     GRID_SIZE_X = 3
     GRID_SIZE_Y = 5
     fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y, figsize=(35, 20))
+    # GRID_SIZE_X = 1
+    # GRID_SIZE_Y = 3
+    # fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y, figsize=(22, 7))
+
+    if GRID_SIZE_X == 1:
+        axs = np.expand_dims(axs, axis=0)
     for i in range(GRID_SIZE_X):
         for j in range(GRID_SIZE_Y):
             axs[i, j].axis('off')
@@ -212,8 +218,8 @@ def plot(args, dest_dir, ycolkey, barplot):
                    height=[bars[k] for k in sorted(list(bars.keys()))],
                    yerr=[bars_errors[k] for k in sorted(list(bars_errors.keys()))],
                    color=[bars_colors[k] for k in sorted(list(bars_colors.keys()))],
-                   width=1.0,
-                   alpha=1.0,
+                   width=0.8,
+                   alpha=0.9,
                    capsize=5)
 
         # Create the axes labels

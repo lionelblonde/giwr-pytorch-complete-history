@@ -140,4 +140,6 @@ def argparser(description="Offline RL Experiment"):
     boolean_flag(parser, 'mix_with_random', default=False)
     parser.add_argument('--mixing_ratio', type=float, default=0.)
 
+    parser.add_argument('--pe_state_inflate', type=int, default=10)
+
     return parser
