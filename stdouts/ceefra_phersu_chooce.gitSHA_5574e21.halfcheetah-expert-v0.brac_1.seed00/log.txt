@@ -1,0 +1,4 @@
+logger configured [master]
+  directory: /Users/lionelblonde/Code/offline-batch-rl-pytorch/data/logs/ceefra_phersu_chooce.gitSHA_5574e21.halfcheetah-expert-v0.brac_1.seed00
+  output formats: ['stdout', 'log', 'csv']
+experiment configured [1 MPI workers]

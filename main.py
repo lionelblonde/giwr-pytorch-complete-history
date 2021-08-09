@@ -21,7 +21,6 @@ from agents.bear_agent import BEARAgent
 from agents.brac_agent import BRACAgent
 from agents.cql_agent import CQLAgent
 from agents.bcp_agent import BCPAgent
-from agents.tspo_agent import TSPOAgent
 from helpers import h5_util as H
 
 
@@ -310,17 +309,6 @@ def train(args):
     elif args.algo.split('_')[0] == 'bcp':
         def agent_wrapper():
             return BCPAgent(
-                env=env,
-                device=device,
-                hps=args,
-                to_load_in_memory=to_load_in_memory,
-            )
-
-        assert args.offline
-
-    elif args.algo.split('_')[0] == 'tspo':
-        def agent_wrapper():
-            return TSPOAgent(
                 env=env,
                 device=device,
                 hps=args,
