@@ -143,3 +143,4 @@ spawn/
 tmux/
 wandb/
 plots/
+stdouts/
