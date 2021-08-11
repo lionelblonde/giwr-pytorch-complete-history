@@ -19,7 +19,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--task', type=str, choices=['train', 'eval', 'generate'], default=None)
     parser.add_argument('--algo', type=str, choices=['ddpg', 'sac', 'bcq',
                                                      'bear', 'brac', 'cql',
-                                                     'bcp', 'tspo'], default=None)
+                                                     'bcp'], default=None)
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
@@ -133,7 +133,7 @@ def argparser(description="Offline RL Experiment"):
     parser.add_argument('--base_pi_loss', type=str, default=None)
     parser.add_argument('--targ_q_bonus', type=str, default=None)
     parser.add_argument('--scale_targ_q_bonus', type=float, default=0.9)
-    parser.add_argument('--base_tspo_action', type=str, default='none')
+    parser.add_argument('--base_giwr_action', type=str, default='none')
     parser.add_argument('--scale_second_stream_loss', type=float, default=0.2)
     boolean_flag(parser, 'use_temp_corr', default=True)
 

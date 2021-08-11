@@ -1,0 +1,96 @@
+meta:
+  task: 'train'
+  benchmark: 'd4rl'
+  algo: 'bcp'
+
+resources:
+  cuda: true
+  gpu_index: 0
+
+logging:
+  wandb_project: 'flareon'
+  record: false
+
+# Training
+save_frequency: 1e5
+num_steps: 5e5
+training_steps_per_iter: 1
+eval_steps_per_iter: 50
+eval_frequency: 5e3
+
+# Model
+perception_stack: '"256 256, 256 256"'
+layer_norm: true
+gauss_mixture: false
+
+# Optimization
+actor_lr: 1.0e-4
+critic_lr: 3.0e-4
+lr_schedule: 'constant'
+clip_norm: 0.
+wd_scale: 0.
+
+# Algorithm
+rollout_len: 2
+batch_size: 256
+gamma: 0.99
+mem_size: 2e6
+polyak: 0.005
+targ_up_freq: 100
+n_step_returns: false
+lookahead: 10
+obs_norm: false
+ret_norm: false
+popart: false
+
+# TD3
+clipped_double: true
+ensemble_q_lambda: 1.
+targ_actor_smoothing: false
+td3_std: 0.2
+td3_c: 0.5
+actor_update_delay: 1
+
+# Prioritized replay
+prioritized_replay: false
+alpha: 0.3
+beta: 1.
+ranked: false
+unreal: false
+
+# Distributional RL
+use_c51: false
+use_qr: false
+c51_num_atoms: 51
+c51_vmin: -150.
+c51_vmax: 150.
+num_tau: 200
+
+# Offline RL
+offline: true
+
+state_dependent_std: true
+warm_start: 0
+crit_targ_update_freq: 1
+cql_deterministic_backup: true
+cql_use_adaptive_alpha_ent: true
+cql_use_adaptive_alpha_pri: true
+cql_init_temp_log_alpha_ent: 0.
+cql_init_temp_log_alpha_pri: 0.
+cql_targ_lower_bound: 1.
+cql_min_q_weight: 5.
+cql_state_inflate: 10
+
+use_rnd_monitoring: false
+use_reward_averager: false
+ra_lr: 1.0e-3
+scale_ra_grad_pen: 0.
+base_next_action: 'theta'
+base_pe_loss: 'pure_td'
+base_pi_loss: 'awr'
+targ_q_bonus: 'none'
+scale_targ_q_bonus: 0.
+use_temp_corr: false
+
+mix_with_random: false
+mixing_ratio: 0.0

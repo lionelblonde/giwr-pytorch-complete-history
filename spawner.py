@@ -420,7 +420,7 @@ class Spawner(object):
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
                 'targ_q_bonus': self.config.get('targ_q_bonus', None),
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
-                'base_tspo_action': self.config.get('base_tspo_action', 'none'),
+                'base_giwr_action': self.config.get('base_giwr_action', 'none'),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
                 'use_temp_corr': self.config.get('use_temp_corr', True),
 
@@ -535,7 +535,7 @@ class Spawner(object):
                 'base_pi_loss': self.config.get('base_pi_loss', 'cql'),
                 'targ_q_bonus': self.config.get('targ_q_bonus', None),
                 'scale_targ_q_bonus': self.config.get('scale_targ_q_bonus', 0.9),
-                'base_tspo_action': self.config.get('base_tspo_action', 'none'),
+                'base_giwr_action': self.config.get('base_giwr_action', 'none'),
                 'scale_second_stream_loss': self.config.get('scale_second_stream_loss', 0.2),
                 'use_temp_corr': self.config.get('use_temp_corr', True),
 

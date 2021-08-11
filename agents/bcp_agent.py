@@ -136,9 +136,9 @@ class BCPAgent(object):
         _hps.use_qr = False
         self.mc_crit = Critic(self.env, _hps, self.rms_obs, hidden_dims[1]).to(self.device)
 
-        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_tspo_action:
+        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_giwr_action:
             self.bc_vae = ActorVAE(self.env, self.hps, self.rms_obs, [750, 750]).to(self.device)
-            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_tspo_action:
+            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_giwr_action:
                 self.bcq_perturb = ActorPhi(self.env, self.hps, self.rms_obs, [400, 300]).to(self.device)
             # Note, we do not sync these networks across parallel workers
 
@@ -196,10 +196,10 @@ class BCPAgent(object):
             self.log_alpha_pri_opt = torch.optim.Adam([self.log_alpha_pri],
                                                       lr=self.hps.critic_lr)
 
-        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_tspo_action:
+        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_giwr_action:
             self.bc_vae_opt = torch.optim.Adam(self.bc_vae.parameters(),
                                                lr=self.hps.behavior_lr)
-            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_tspo_action:
+            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_giwr_action:
                 self.bcq_perturb_opt = torch.optim.Adam(self.bcq_perturb.parameters(),
                                                         lr=self.hps.actor_lr)
 
@@ -214,7 +214,7 @@ class BCPAgent(object):
         if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
                 'rnd' in self.hps.base_next_action or
-                'rnd' in self.hps.base_tspo_action):
+                'rnd' in self.hps.base_giwr_action):
             # Create RND networks
             self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.rms_obs)
 
@@ -422,7 +422,7 @@ class BCPAgent(object):
         if (self.hps.use_rnd_monitoring or
                 self.hps.base_pe_loss in ['htg_1', 'htg_2'] or
                 'rnd' in self.hps.base_next_action or
-                'rnd' in self.hps.base_tspo_action):
+                'rnd' in self.hps.base_giwr_action):
             # Update the RND network
             self.rnd.update(batch)
             if DEBUG:
@@ -450,7 +450,7 @@ class BCPAgent(object):
         log_prob = self.actr.logp(state, action_from_actr)
 
         # Update the networks needed to assemble the next action (if needed)
-        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_tspo_action:
+        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_giwr_action:
             # self.bc_vae
             recon, mean, std = self.bc_vae(state, action)
             recon_loss = F.mse_loss(recon, action)
@@ -460,7 +460,7 @@ class BCPAgent(object):
             self.bc_vae_opt.zero_grad()
             bc_vae_loss.backward()
             self.bc_vae_opt.step()
-            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_tspo_action:
+            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_giwr_action:
                 # self.bcq_perturb
                 action_from_bc_vae = self.bc_vae.decode(state)
                 bcq_perturb_loss = -self.crit.QZ(state, self.bcq_perturb.act(state, action_from_bc_vae)).mean()
@@ -953,66 +953,66 @@ class BCPAgent(object):
                     metrics['is_crr_adv_clipped_sum'].append(is_crr_adv_clipped_sum)
                 actr_loss = -self.actr.logp(state, action) * crr_adv.detach()
 
-                # Select the TSPO action
-                # Note, we only allow the use of tspo with CRR variants, but it could be used anywhere
-                if self.hps.base_tspo_action == 'theta':
-                    tspo_action = float(self.max_ac) * self.actr.sample(state, sg=True)
-                    # Compute and add the TSPO loss contribution
-                    tspo_q = self.crit.QZ(state, tspo_action)
-                    tspo_adv = tspo_q - emp_adv_from_actr
-                    tspo_adv = torch.exp(tspo_adv / crr_temp).clamp(max=20.)
+                # Select the giwr action
+                # Note, we only allow the use of giwr with CRR variants, but it could be used anywhere
+                if self.hps.base_giwr_action == 'theta':
+                    giwr_action = float(self.max_ac) * self.actr.sample(state, sg=True)
+                    # Compute and add the giwr loss contribution
+                    giwr_q = self.crit.QZ(state, giwr_action)
+                    giwr_adv = giwr_q - emp_adv_from_actr
+                    giwr_adv = torch.exp(giwr_adv / crr_temp).clamp(max=20.)
                     actr_loss -= (self.hps.scale_second_stream_loss *
-                                  self.actr.logp(state, tspo_action) * tspo_adv.detach())
-                elif self.hps.base_tspo_action == 'theta_max':
+                                  self.actr.logp(state, giwr_action) * giwr_adv.detach())
+                elif self.hps.base_giwr_action == 'theta_max':
                     _state = torch.repeat_interleave(state, 10, 0)  # duplicate 10 times
-                    _tspo_action = float(self.max_ac) * self.actr.sample(_state, sg=True)
-                    _q_prime = self.targ_crit.QZ(_state, _tspo_action)
+                    _giwr_action = float(self.max_ac) * self.actr.sample(_state, sg=True)
+                    _q_prime = self.targ_crit.QZ(_state, _giwr_action)
                     if self.hps.clipped_double:
                         # Define QZ' as the minimum QZ value between TD3's twin QZ's
-                        _twin_q_prime = self.targ_twin.QZ(_state, _tspo_action)
+                        _twin_q_prime = self.targ_twin.QZ(_state, _giwr_action)
                         _q_prime = (self.hps.ensemble_q_lambda * torch.min(_q_prime, _twin_q_prime) +
                                     (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
                     # Take argmax over each action sampled
-                    _argmax_tspo_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
-                    _argmax_tspo_action = torch.gather(
-                        _tspo_action.reshape(self.hps.batch_size, 10, -1),
+                    _argmax_giwr_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
+                    _argmax_giwr_action = torch.gather(
+                        _giwr_action.reshape(self.hps.batch_size, 10, -1),
                         1,
-                        _argmax_tspo_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
+                        _argmax_giwr_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
                     )
-                    tspo_action = _argmax_tspo_action.squeeze(dim=1)
-                    # Compute and add the TSPO loss contribution
-                    tspo_q = self.crit.QZ(state, tspo_action)
-                    tspo_adv = tspo_q - emp_adv_from_actr
-                    tspo_adv = torch.exp(tspo_adv / crr_temp).clamp(max=20.)
+                    giwr_action = _argmax_giwr_action.squeeze(dim=1)
+                    # Compute and add the giwr loss contribution
+                    giwr_q = self.crit.QZ(state, giwr_action)
+                    giwr_adv = giwr_q - emp_adv_from_actr
+                    giwr_adv = torch.exp(giwr_adv / crr_temp).clamp(max=20.)
                     actr_loss -= (self.hps.scale_second_stream_loss *
-                                  self.actr.logp(state, tspo_action) * tspo_adv.detach())
-                elif 'bc' in self.hps.base_tspo_action:
-                    if self.hps.base_tspo_action == 'beta_bc':  # Expected SARSA with a VAE
-                        tspo_action = self.bc_vae.decode(state)
-                    elif self.hps.base_tspo_action in [
+                                  self.actr.logp(state, giwr_action) * giwr_adv.detach())
+                elif 'bc' in self.hps.base_giwr_action:
+                    if self.hps.base_giwr_action == 'beta_bc':  # Expected SARSA with a VAE
+                        giwr_action = self.bc_vae.decode(state)
+                    elif self.hps.base_giwr_action in [
                             'beta_bc_max',  # EMaQ
                             'beta_bcq_max',  # BCQ
                             ]:
                         _state = torch.repeat_interleave(state, 10, 0)  # duplicate 10 times
-                        _tspo_action = self.bc_vae.decode(_state)
-                        if self.hps.base_tspo_action == 'beta_bcq_max':  # BCQ
+                        _giwr_action = self.bc_vae.decode(_state)
+                        if self.hps.base_giwr_action == 'beta_bcq_max':  # BCQ
                             # Perturb the action return by the VAE cloner
-                            _tspo_action = self.bcq_perturb.act(_state, _tspo_action)
-                        _q_prime = self.targ_crit.QZ(_state, _tspo_action)
+                            _giwr_action = self.bcq_perturb.act(_state, _giwr_action)
+                        _q_prime = self.targ_crit.QZ(_state, _giwr_action)
                         if self.hps.clipped_double:
                             # Define QZ' as the minimum QZ value between TD3's twin QZ's
-                            _twin_q_prime = self.targ_twin.QZ(_state, _tspo_action)
+                            _twin_q_prime = self.targ_twin.QZ(_state, _giwr_action)
                             _q_prime = (self.hps.ensemble_q_lambda * torch.min(_q_prime, _twin_q_prime) +
                                         (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
                         # Take argmax over each action sampled
-                        _argmax_tspo_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
-                        _argmax_tspo_action = torch.gather(
-                            _tspo_action.reshape(self.hps.batch_size, 10, -1),
+                        _argmax_giwr_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1, 1)
+                        _argmax_giwr_action = torch.gather(
+                            _giwr_action.reshape(self.hps.batch_size, 10, -1),
                             1,
-                            _argmax_tspo_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
+                            _argmax_giwr_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
                         )
-                        tspo_action = _argmax_tspo_action.squeeze(dim=1)
-                    elif self.hps.base_tspo_action in [
+                        giwr_action = _argmax_giwr_action.squeeze(dim=1)
+                    elif self.hps.base_giwr_action in [
                             'beta_bc_theta_max_rnd',  # BRPO, SPIBB
                             'beta_bc_max_theta_max_rnd',
                             'beta_bcq_max_theta_max_rnd',
@@ -1021,58 +1021,58 @@ class BCPAgent(object):
                         _ac, _ = self.ac_factory(self.actr, state, 10)
                         _q = self.q_factory(self.crit, state, _ac)  # shape: batch_size, 10, 1
                         index = _q.argmax(1)
-                        tspo_action_policy = _ac[index].squeeze(1)
+                        giwr_action_policy = _ac[index].squeeze(1)
                         # Assemble the 'rnd' piece
                         with torch.no_grad():
-                            _rnd_score = self.rnd.get_int_rew(state, tspo_action_policy)
+                            _rnd_score = self.rnd.get_int_rew(state, giwr_action_policy)
                             _rnd_score = 1.0 - torch.exp(-_rnd_score / RND_TEMP)
                             _rnd = 1. * _rnd_score.gt(0.6)
                             if DEBUG:
                                 logger.info(f"number of 1's in the uncertainty score: {_rnd.sum()}/{_rnd.shape[0]}")
                         # Assemble the 'beta_bc*' piece
-                        if self.hps.base_tspo_action == 'beta_bc_theta_max_rnd':  # BRPO, SPIBB
-                            tspo_action_behave = self.bc_vae.decode(state)
-                        elif self.hps.base_tspo_action in [
+                        if self.hps.base_giwr_action == 'beta_bc_theta_max_rnd':  # BRPO, SPIBB
+                            giwr_action_behave = self.bc_vae.decode(state)
+                        elif self.hps.base_giwr_action in [
                                     'beta_bc_max_theta_max_rnd',
                                     'beta_bcq_max_theta_max_rnd',
                                 ]:
                             _state = torch.repeat_interleave(state, 10, 0)  # duplicate 10 times
-                            _tspo_action = self.bc_vae.decode(_state)
-                            if self.hps.base_tspo_action == 'beta_bcq_max_theta_max_rnd':
+                            _giwr_action = self.bc_vae.decode(_state)
+                            if self.hps.base_giwr_action == 'beta_bcq_max_theta_max_rnd':
                                 # Perturb the action return by the VAE cloner
-                                _tspo_action = self.bcq_perturb.act(_state, _tspo_action)
-                            _q_prime = self.targ_crit.QZ(_state, _tspo_action)
+                                _giwr_action = self.bcq_perturb.act(_state, _giwr_action)
+                            _q_prime = self.targ_crit.QZ(_state, _giwr_action)
                             if self.hps.clipped_double:
                                 # Define QZ' as the minimum QZ value between TD3's twin QZ's
-                                _twin_q_prime = self.targ_twin.QZ(_state, _tspo_action)
+                                _twin_q_prime = self.targ_twin.QZ(_state, _giwr_action)
                                 _q_prime = (self.hps.ensemble_q_lambda * torch.min(_q_prime, _twin_q_prime) +
                                             (1. - self.hps.ensemble_q_lambda) * torch.max(_q_prime, _twin_q_prime))
                             # Take argmax over each action sampled
-                            _argmax_tspo_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1,
+                            _argmax_giwr_action_index = _q_prime.reshape(self.hps.batch_size, -1).argmax(1).reshape(-1,
                                                                                                                     1)
-                            _argmax_tspo_action = torch.gather(
-                                _tspo_action.reshape(self.hps.batch_size, 10, -1),
+                            _argmax_giwr_action = torch.gather(
+                                _giwr_action.reshape(self.hps.batch_size, 10, -1),
                                 1,
-                                _argmax_tspo_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
+                                _argmax_giwr_action_index.unsqueeze(-1).repeat(1, 1, self.ac_dim)
                             )
-                            tspo_action_behave = _argmax_tspo_action.squeeze(dim=1)
+                            giwr_action_behave = _argmax_giwr_action.squeeze(dim=1)
                         else:
                             # This clause should not be needed, but here as safety net in case of codebase extension
-                            raise ValueError("invalid tspo action selection method (in rnd block).")
+                            raise ValueError("invalid giwr action selection method (in rnd block).")
                         # Assemble the 3 pieces
-                        tspo_action = (_rnd * tspo_action_behave) + ((1 - _rnd) * tspo_action_policy)
+                        giwr_action = (_rnd * giwr_action_behave) + ((1 - _rnd) * giwr_action_policy)
                     else:
-                        raise ValueError("invalid tspo action selection method.")
-                    # Compute and add the TSPO loss contribution
-                    tspo_q = self.crit.QZ(state, tspo_action)
-                    tspo_adv = tspo_q - emp_adv_from_actr
-                    tspo_adv = torch.exp(tspo_adv / crr_temp).clamp(max=20.)
+                        raise ValueError("invalid giwr action selection method.")
+                    # Compute and add the giwr loss contribution
+                    giwr_q = self.crit.QZ(state, giwr_action)
+                    giwr_adv = giwr_q - emp_adv_from_actr
+                    giwr_adv = torch.exp(giwr_adv / crr_temp).clamp(max=20.)
                     actr_loss -= (self.hps.scale_second_stream_loss *
-                                  self.actr.logp(state, tspo_action) * tspo_adv.detach())
-                elif self.hps.base_tspo_action == 'none':
+                                  self.actr.logp(state, giwr_action) * giwr_adv.detach())
+                elif self.hps.base_giwr_action == 'none':
                     pass
                 else:
-                    raise ValueError("invalid tspo action selection method.")
+                    raise ValueError("invalid giwr action selection method.")
             elif self.hps.base_pi_loss == 'awr':
                 awr_q = torch.Tensor(batch['rets']).to(self.device)
                 emp_adv_ac, _ = self.ac_factory(self.actr, state, ADV_ESTIM_SAMPLES)
@@ -1190,9 +1190,9 @@ class BCPAgent(object):
         torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
             torch.save(self.twin.state_dict(), osp.join(path, f"twin_{iters_so_far}.pth"))
-        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_tspo_action:
+        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_giwr_action:
             torch.save(self.bc_vae.state_dict(), osp.join(path, f"bc_vae_{iters_so_far}.pth"))
-            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_tspo_action:
+            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_giwr_action:
                 torch.save(self.bcq_perturb.state_dict(), osp.join(path, f"bcq_perturb_{iters_so_far}.pth"))
 
     def load(self, path, iters_so_far):
@@ -1202,7 +1202,7 @@ class BCPAgent(object):
         self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
         if self.hps.clipped_double:
             self.twin.load_state_dict(torch.load(osp.join(path, f"twin_{iters_so_far}.pth")))
-        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_tspo_action:
+        if 'bc' in self.hps.base_next_action or 'bc' in self.hps.base_giwr_action:
             self.bc_vae.load_state_dict(torch.load(osp.join(path, f"bc_vae_{iters_so_far}.pth")))
-            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_tspo_action:
+            if 'bcq' in self.hps.base_next_action or 'bcq' in self.hps.base_giwr_action:
                 self.bcq_perturb.load_state_dict(torch.load(osp.join(path, f"bcq_perturb_{iters_so_far}.pth")))
