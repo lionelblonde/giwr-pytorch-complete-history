@@ -1,7 +1,9 @@
 # Offline RL Baselines and Generalized Importance-Weighted Regression (GIWR)
 
 PyTorch implementation of our work:
-"Where is the Grass Greener? Revisiting Generalized Policy Iteration for Offline Reinforcement Learning".
+"Optimality Inductive Biases and Agnostic Guidelines for Offline Reinforcement Learning".
+(Name of previous version:
+"Where is the Grass Greener? Revisiting Generalized Policy Iteration for Offline Reinforcement Learning".)
 
 [arXiv link](https://arxiv.org/abs/2107.01407)
 

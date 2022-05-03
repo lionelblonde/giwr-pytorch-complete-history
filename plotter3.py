@@ -27,8 +27,6 @@ def plot(args, dest_dir, ycolkey, barplot):
     f3 = fm.FontProperties(fname=osp.join(font_dir, 'BasierCircle-Regular.otf'), size=22)
     f4 = fm.FontProperties(fname=osp.join(font_dir, 'BasierCircle-Medium.otf'), size=24)
 
-    marker_list = ['d', 'X', 'P', '*', '^', 's', 'D', 'v', 'p', 'h']
-
     # Palette
     palette = {
         'grid': (231, 234, 236),
@@ -37,7 +35,7 @@ def plot(args, dest_dir, ycolkey, barplot):
         'font': (108, 108, 126),
         'symbol': (64, 68, 82),
         'expert': (0, 0, 0),
-        'curves': sb.color_palette(),
+        'curves': sb.color_palette('mako_r', n_colors=11),
     }
     for k, v in palette.items():
         if k != 'curves':
@@ -53,7 +51,6 @@ def plot(args, dest_dir, ycolkey, barplot):
     plt.rcParams['axes.linewidth'] = 0.8
     # Lines
     plt.rcParams['lines.linewidth'] = 1.4
-    plt.rcParams['lines.markersize'] = 1
     # Grid
     plt.rcParams['grid.linewidth'] = 0.6
     plt.rcParams['grid.linestyle'] = '-'
@@ -63,7 +60,6 @@ def plot(args, dest_dir, ycolkey, barplot):
     xcol_dump = defaultdict(list)
     ycol_dump = defaultdict(list)
     color_map = defaultdict(str)
-    marker_map = defaultdict(str)
     text_map = defaultdict(str)
     dirs = [d.split('/')[-1] for d in glob.glob(f"{args.dir}/*")]
     print(f"pulling logs from sub-directories: {dirs}")
@@ -73,7 +69,6 @@ def plot(args, dest_dir, ycolkey, barplot):
     print(dirs)
     # Colors
     colors = {d: palette['curves'][i] for i, d in enumerate(dirs)}
-    markers = {d: marker_list[i] for i, d in enumerate(dirs)}
 
     for d in dirs:
 
@@ -100,8 +95,6 @@ def plot(args, dest_dir, ycolkey, barplot):
             ycol_dump[key].append(ycol)
             # Add color
             color_map[key] = colors[d]
-            # Add marker
-            marker_map[key] = markers[d]
             # Add text
             text_map[key] = fname.split('/')[-3]
 
@@ -125,15 +118,6 @@ def plot(args, dest_dir, ycolkey, barplot):
     num_cols = len(texts)  # noqa
     print(f"Legend's texts (ordered): {texts}")
 
-    patches = [plt.plot([],
-                        [],
-                        marker=marker_list[i],
-                        ms=20,
-                        ls="",
-                        color=palette['curves'][i],
-                        label="{}: {:s}".format(i + 1, texts[i]))[0]
-               for i in range(len(texts))]
-
     # Calculate the x axis upper bound
     xmaxes = defaultdict(int)
     for i, key in enumerate(xcol_dump.keys()):
@@ -146,8 +130,10 @@ def plot(args, dest_dir, ycolkey, barplot):
     # Create constants from arguments to make the names more intuitive
     GRID_SIZE_X = args.grid_height
     GRID_SIZE_Y = args.grid_width
-    CELL_SIZE = 7
-    fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y, figsize=(CELL_SIZE * GRID_SIZE_Y, CELL_SIZE * GRID_SIZE_X))
+    CELL_SIZE_X = 9
+    CELL_SIZE_Y = 11
+    fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y,
+                            figsize=(CELL_SIZE_Y * GRID_SIZE_Y, CELL_SIZE_X * GRID_SIZE_X))
 
     if GRID_SIZE_X == 1:
         axs = np.expand_dims(axs, axis=0)
@@ -209,9 +195,6 @@ def plot(args, dest_dir, ycolkey, barplot):
                     bars_colors[text_map[key]] = color_map[key]
                 else:
                     ax.plot(xcol_dump[key][0][0:xmax], smooth_mean,
-                            marker=marker_map[key],
-                            markersize=20,
-                            markevery=args.markevery,
                             color=color_map[key],
                             alpha=1.0)
                     ax.fill_between(xcol_dump[key][0][0:xmax],
@@ -226,23 +209,23 @@ def plot(args, dest_dir, ycolkey, barplot):
                     pass
 
         if barplot:
-            PLOT_NAME = False  # XXX
-            ax.bar(x=[(v.split('__')[-1] if PLOT_NAME else v.split('__')[0])
-                      for v in sorted(set(list(text_map.values())))],
+            ax.bar(x=["0%",
+                      "10%",
+                      "20%",
+                      "30%",
+                      "40%",
+                      "50%",
+                      "60%",
+                      "70%",
+                      "80%",
+                      "90%",
+                      "100%"],
                    height=[bars[k] for k in sorted(list(bars.keys()))],
                    yerr=[bars_errors[k] for k in sorted(list(bars_errors.keys()))],
                    color=[bars_colors[k] for k in sorted(list(bars_colors.keys()))],
-                   width=0.6,
+                   width=0.9,
                    alpha=0.6,
                    capsize=5)
-            for i, key in enumerate(experiment_map[env]):
-                print(key, text_map[key])
-                _x = text_map[key].split('__')[-1] if PLOT_NAME else text_map[key].split('__')[0]
-                ax.plot(_x, bars[text_map[key]],
-                        marker=marker_map[key],
-                        markersize=20,
-                        color=color_map[key],
-                        alpha=1.0)
 
         # Create the axes labels
         ax.tick_params(width=0.2, length=1, pad=1, colors=palette['axes'], labelcolor=palette['font'])
@@ -254,30 +237,10 @@ def plot(args, dest_dir, ycolkey, barplot):
             tick.set_fontproperties(f1)
         for tick in ax.get_yticklabels():
             tick.set_fontproperties(f1)
-        if not barplot:
-            ax.set_xlabel("Timesteps", color=palette['font'], fontproperties=f3)  # , labelpad=6
-        ax.set_ylabel(args.ylabel, color=palette['font'], fontproperties=f3)  # , labelpad=12
+        ax.set_xlabel("Data Corruption Percentage", color=palette['font'], fontproperties=f2, labelpad=11)
+        ax.set_ylabel(args.ylabel, color=palette['font'], fontproperties=f3)
         # Create title
         ax.set_title(f"{env}", color=palette['font'], fontproperties=f4, pad=-10)
-
-    # Create legend
-    # fig.subplots_adjust(bottom=0.3, wspace=0.33)
-    legend = fig.legend(
-        handles=patches,
-        loc='upper center',
-        bbox_to_anchor=(0.5, 1.05),
-        ncol=2,
-        frameon=False,
-        columnspacing=7,
-        handleheight=5.5,
-        # borderaxespad=0,
-        # facecolor='w',
-    )
-    legend.get_frame().set_linewidth(2.0)
-    legend.get_frame().set_edgecolor(palette['font'])
-    for text in legend.get_texts():
-        text.set_color(palette['font'])
-        text.set_fontproperties(f2)
 
     fig.set_tight_layout(True)
     # fig.subplots_adjust(right=0.75)
@@ -303,7 +266,6 @@ if __name__ == "__main__":
     parser.add_argument('--grid_height', type=int, default=3, help='height of the grid in number of plots')
     parser.add_argument('--truncate', type=int, default=-1, help='negative values prevent x truncation')
     parser.add_argument('--ylabel', type=str, default='Episodic Return', help='Y-axis label')
-    parser.add_argument('--markevery', type=int, default=124, help='how often to put a mark')
     args = parser.parse_args()
 
     # Create unique destination dir name
