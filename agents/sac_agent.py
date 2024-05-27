@@ -295,7 +295,7 @@ class SACAgent(object):
         if update_actor:
 
             action_from_actr = float(self.max_ac) * self.actr.sample(state, sg=False)
-            log_prob = self.actr.logp(state, action_from_actr.detach())
+            log_prob = self.actr.logp(state, action_from_actr)
             q_from_actr = self.crit.QZ(state, action_from_actr)
             if self.hps.clipped_double:
                 twin_q_from_actr = self.twin.QZ(state, action_from_actr)
